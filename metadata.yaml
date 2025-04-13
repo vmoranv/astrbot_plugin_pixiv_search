@@ -1,5 +1,46 @@
-name: helloworld # 这是你的插件的唯一识别名。
-desc: 这是 AstrBot 的默认插件，支持关键词回复。 # 插件简短描述
-version: v1.3 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+# 插件元数据
+id: pixiv_search
+name: Pixiv 图片搜索
+author: vmoranv
+version: 1.0.0 
+description: 通过标签在 Pixiv 上搜索插画。用法 /pixiv tag1,tag2,... 可在配置中设置认证信息、返回数量和 R18 过滤模式。
+repo: https://github.com/vmoranv/astrbot_plugin_pixiv_search
+requirements:
+  - pixiv-api>=1.0.0
+# 新增：定义插件配置项，用于 WebUI 生成配置界面
+config_schema:
+  # 认证方式一：用户名/密码 (与 Refresh Token 二选一)
+  username:
+    type: str
+    required: false # 非必填
+    default: ""
+    description: "Pixiv 用户名 (如果使用 Refresh Token，请留空)"
+  password:
+    type: str
+    required: false # 非必填
+    default: ""
+    description: "Pixiv 密码 (如果使用 Refresh Token，请留空)"
+    is_sensitive: true # 标记为敏感信息，WebUI 会隐藏显示
+  # 认证方式二：Refresh Token (与用户名/密码 二选一)
+  refresh_token:
+    type: str
+    required: false # 非必填
+    default: ""
+    description: "Pixiv Refresh Token (优先使用此项认证，如果填写，将忽略用户名/密码)"
+    is_sensitive: true # 标记为敏感信息
+  # 功能配置
+  return_count:
+    type: int
+    required: true # 必填
+    default: 1
+    description: "每次搜索返回的图片数量"
+  r18_mode:
+    type: int
+    required: true # 必填
+    default: 0 # 默认值为 0
+    description: "R18 内容过滤模式 (0: 过滤 R18/R18G, 1: 允许 R18/R18G)"
+    choices:
+      - value: 0
+        label: "过滤 R18/R18G"
+      - value: 1
+        label: "允许 R18/R18G"
