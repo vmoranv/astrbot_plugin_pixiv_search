@@ -33,8 +33,7 @@
     # cd /path/to/your/AstrBot
     mkdir -p data/plugins
     cd data/plugins
-    # 将下面的 URL 替换为你的插件仓库地址
-    git clone https://github.com/你的用户名/你的插件仓库名.git astrbot_plugin_pixiv_search
+    git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
     ```
     *注意：建议将克隆下来的文件夹重命名为 `astrbot_plugin_pixiv_search` (或与 `metadata.yaml` 中 `name` 字段一致的名称)。*
 
