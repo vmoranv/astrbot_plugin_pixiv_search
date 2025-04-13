@@ -1,1 +1,2 @@
-pixiv-api>=1.0.0 
+pixiv-api>=3.0.0
+aiohttp>=3.8.0 

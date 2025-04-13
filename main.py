@@ -1,6 +1,9 @@
 import asyncio
 import random
-from typing import List, Optional
+import logging
+from pathlib import Path
+from typing import Optional, List, Dict, Any # 确保导入 Optional
+import aiohttp # 导入 aiohttp
 
 # AstrBot 核心库导入
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
