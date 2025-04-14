@@ -1,2 +1,2 @@
-pixiv-api>=3.0.0
+pixivpy3>=3.0.0
 aiohttp>=3.8.0 

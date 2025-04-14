@@ -1,243 +1,946 @@
 import asyncio
 import random
-import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any # 确保导入 Optional
-import aiohttp # 导入 aiohttp
+from typing import Optional, List, Dict, Any 
+import aiohttp 
 
 # AstrBot 核心库导入
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger  # 导入全局 logger
 import astrbot.api.message_components as Comp
-from astrbot.core.utils.logger import log
+from astrbot.api.all import command  # 导入 command 装饰器
 
-# 尝试导入 pixiv-api 库
+# 尝试导入 pixivpy 库
 try:
-    from pixivapi import Client, Size, PixivError
+    from pixivpy3 import AppPixivAPI
 except ImportError:
-    # 如果导入失败，记录错误并抛出异常，阻止插件加载
-    log.error("Pixiv 插件依赖库 'pixiv-api' 未安装。请确保 requirements.txt 文件存在且内容正确，然后重载插件或重启 AstrBot。您也可以尝试手动安装： pip install pixiv-api")
-    raise ImportError("pixiv-api not found, please install it.")
-
-
+    logger.error("Pixiv 插件依赖库 'pixivpy' 未安装。请确保 requirements.txt 文件存在且内容正确，然后重载插件或重启 AstrBot。")
+    raise ImportError("pixivpy not found, please install it.")
 
 @register(
-    id="pixiv_search", 
-    author="vmoranv", 
-    name="Pixiv 图片搜索", 
-    version="1.0.0", 
-    description="通过标签在 Pixiv 上搜索插画。用法: /pixiv tag1,tag2,... 可在配置中设置认证信息、返回数量和 R18 过滤模式。", 
-    repo="https://github.com/vmoranv/astrbot_plugin_pixiv_search"
+    "pixiv_search",
+    "vmoranv",
+    "Pixiv 图片搜索",
+    "1.0.0",
+    "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
     """
     AstrBot 插件，用于通过 Pixiv API 搜索插画。
     配置通过 AstrBot WebUI 进行管理。
+    用法:
+        /pixiv <标签1>,<标签2>,...  搜索 Pixiv 插画
+        /pixiv help                 查看帮助信息
+    可在配置中设置认证信息、返回数量和 R18 过滤模式。
     """
-    def __init__(self, context: Context):
-        """插件初始化"""
-        super().__init__(context)
-        self.client = Client() # 初始化 Pixiv API 客户端
-        self.authenticated: bool = False # 认证状态标志
+    def __init__(self, context: Context, config: Dict[str, Any]):
+        """初始化 Pixiv 插件"""
+        super().__init__(context)  # 调用父类的初始化方法
+        self.config = config
+        self.client = AppPixivAPI()  # 移除 client_id 和 client_secret
+        self.authenticated = False
+        self.proxy = self.config.get("proxy", None)
+        self.refresh_token = self.config.get("refresh_token", None)
+        self.return_count = self.config.get("return_count", 1)
+        self.r18_mode = self.config.get("r18_mode", "过滤 R18")
+        
+        # 记录初始化信息
+        logger.info(f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, return_count={self.return_count}, r18_mode='{self.r18_mode}'")
+        
+    @staticmethod
+    def info() -> Dict[str, Any]:
+        """返回插件元数据"""
+        return {
+            "name": "pixiv_search",
+            "author": "vmoranv",
+            "description": "Pixiv 图片搜索",
+            "version": "1.0.0",
+            "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
+        }
 
-        # --- 从 AstrBot 配置中读取设置 ---
-        # 获取本插件的配置字典，如果不存在则返回空字典
-        self.config = self.context.get_config('pixiv_search', {})
+    async def _authenticate(self) -> bool:
+        """尝试使用配置的凭据进行 Pixiv API 认证"""
+        if self.authenticated:
+            return True
 
-        # 读取认证信息 (优先使用 refresh_token)
-        self.refresh_token: Optional[str] = self.config.get('refresh_token')
-        self.username: Optional[str] = self.config.get('username')
-        self.password: Optional[str] = self.config.get('password')
-
-        # 读取功能配置，使用 .get() 并提供默认值以防配置缺失
-        self.return_count: int = self.config.get('return_count', 1) # 默认返回 1 张
-        # R18 模式: 0 = 过滤 R18 (默认), 1 = 允许 R18
-        self.r18_mode: int = self.config.get('r18_mode', 0)
-        # --------------------------------
-
-        # 在后台启动认证过程，避免阻塞 AstrBot 启动
-        asyncio.create_task(self._authenticate())
-
-    async def _authenticate(self):
-        """
-        异步执行 Pixiv API 认证。
-        优先使用 Refresh Token，其次使用用户名/密码 (从配置中读取)。
-        """
+        logger.info("Pixiv 插件：尝试进行 Pixiv API 认证...")
         try:
-            # 优先使用 Refresh Token 认证 (从 self.refresh_token 读取)
             if self.refresh_token:
-                log.info("Pixiv 插件：尝试使用配置中的 refresh token 进行认证...")
-                await asyncio.to_thread(self.client.authenticate, self.refresh_token)
-                # 认证成功后，保存可能更新的 refresh token (仅在内存中更新)
-                # 注意：这不会自动写回配置文件
-                self.refresh_token = self.client.refresh_token
-                log.info("Pixiv 插件：使用 refresh token 认证成功。")
-            # 如果没有 Token，则尝试使用用户名和密码 (从 self.username 和 self.password 读取)
-            elif self.username and self.password:
-                log.info("Pixiv 插件：尝试使用配置中的用户名和密码进行认证...")
-                await asyncio.to_thread(self.client.login, self.username, self.password)
-                # 认证成功后，保存获取到的 refresh token (仅在内存中更新)
-                self.refresh_token = self.client.refresh_token
-                log.info(f"Pixiv 插件：使用用户名密码认证成功。新的 Refresh Token 已获取。")
+                logger.info("使用 Refresh Token 进行认证...")
+                self.client.auth(refresh_token=self.refresh_token)  # 仅使用 refresh_token
+                self.authenticated = True
+                logger.info("Pixiv 插件：认证成功。")
+                return True
             else:
-                # 如果两种认证方式都未配置
-                log.warning("Pixiv 插件：未在配置中找到有效的 Pixiv 用户名/密码或 refresh token，无法进行认证。请在 AstrBot 管理面板配置插件。")
-                self.authenticated = False
-                return # 无法认证，直接返回
+                logger.error("Pixiv 插件：未提供有效的 Refresh Token，无法进行认证。")
+                return False
 
-            # 标记为认证成功
-            self.authenticated = True
-
-        except PixivError as e:
-            # 处理 Pixiv API 特定的认证错误
-            log.error(f"Pixiv 插件：认证失败 - {e}. 请检查 AstrBot 管理面板中的插件配置。")
-            self.authenticated = False
         except Exception as e:
-            # 处理其他可能的异常
-            log.error(f"Pixiv 插件：认证过程中发生未知错误 - {e}", exc_info=True)
-            self.authenticated = False
+            logger.error(f"Pixiv 插件：认证失败 - 异常类型: {type(e)}, 错误信息: {e}, 异常详情: {e.__dict__}")
+            logger.warning("Pixiv 插件：API 认证失败，请检查配置中的凭据信息。")
+            return False
 
-    @filter.command("pixiv")
-    async def search_pixiv(self, event: AstrMessageEvent, tags: str):
-        '''
-        处理 /pixiv 指令，根据提供的标签搜索 Pixiv 插画。
-        标签之间用逗号分隔。
-        '''
-        # 检查认证状态，如果未认证，尝试重新认证
-        if not self.authenticated:
-            log.warning("Pixiv 插件：尚未认证，尝试重新认证...")
-            await self._authenticate()
-            # 如果再次认证失败，则提示用户并返回
-            if not self.authenticated:
-                yield event.plain_result("Pixiv 插件未认证或认证失败，请检查 AstrBot 管理面板中的插件配置或联系管理员。")
-                return
-
-        # 检查用户是否提供了标签
-        if not tags:
-            yield event.plain_result("请输入要搜索的标签，用逗号分隔。\n例如：`/pixiv 初音ミク,VOCALOID`")
+    @command("pixiv")
+    async def pixiv(self, event: AstrMessageEvent, tags: str):
+        """处理 /pixiv 命令，默认为标签搜索功能"""
+        # 帮助信息处理
+        if tags.strip().lower() == "help":
+            yield self.pixiv_help(event)
             return
 
-        # 处理标签：去除首尾空格，用空格连接，作为搜索关键词
-        search_term = " ".join(tag.strip() for tag in tags.split(',') if tag.strip())
-        if not search_term:
-            yield event.plain_result("输入的标签无效，请重新输入。")
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
             return
 
-        log.info(f"Pixiv 插件：收到搜索请求，原始标签: '{tags}', 处理后搜索词: '{search_term}'")
-
+        # 标签搜索处理
+        logger.info(f"Pixiv 插件：正在搜索标签 - {tags}")
         try:
-            # 执行搜索 (同步操作，放入线程执行)
-            log.debug(f"Pixiv 插件：开始在 Pixiv 上搜索插画 '{search_term}'...")
-            search_result = await asyncio.to_thread(
-                self.client.search_illust,
-                word=search_term,
-                search_target='partial_match_for_tags', # 搜索模式：标签部分匹配
-                sort='date_desc', # 排序方式：按日期降序
-                # duration=None, # 可选时间范围: 'within_last_day', 'within_last_week', 'within_last_month'
-            )
-            log.debug(f"Pixiv 插件：搜索 API 调用完成。")
-
-            illustrations = search_result.get("illustrations", [])
-            if not illustrations:
-                log.info(f"Pixiv 插件：未找到与 '{search_term}' 相关的插画。")
-                yield event.plain_result(f"抱歉，找不到与 '{search_term}' 相关的插画。")
+            # 调用 Pixiv API 搜索插画
+            search_result = self.client.search_illust(tags, search_target="partial_match_for_tags")
+            if not search_result.illusts:
+                yield event.plain_result("未找到相关插画。")
                 return
 
-            log.info(f"Pixiv 插件：找到 {len(illustrations)} 个初步匹配的插画。")
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in search_result.illusts:
+                # 检查 illust.tags 是否为 None，并确保 tags 是一个列表
+                tags_list = illust.tags if illust.tags else []
 
-            # --- 结果过滤和选择 (使用配置中的 r18_mode) ---
-            valid_illustrations = []
-            filter_r18_enabled = (self.r18_mode == 0) # 0 表示过滤 R18
-            log.debug(f"Pixiv 插件：R18 过滤模式: {'启用' if filter_r18_enabled else '禁用'} (配置值: {self.r18_mode})")
+                # 添加日志：打印 illust.tags 的值和类型
+                logger.debug(f"illust.tags: {illust.tags}, type: {type(illust.tags)}")
+                if isinstance(illust.tags, list):
+                    for tag_item in illust.tags:
+                        logger.debug(f"  tag item: {tag_item}, type: {type(tag_item)}")
 
-            for illust in illustrations:
-                # 检查是否需要过滤 R18 内容 (根据配置决定)
-                # illust.sanity_level: 2=R-18, 4=R-18G
-                if filter_r18_enabled and illust.sanity_level >= 2:
-                    log.debug(f"Pixiv 插件：过滤 R18/R18G 插画 ID: {illust.id} (Sanity Level: {illust.sanity_level})")
-                    continue # 跳过 R18 内容
+                # 检查 tags_list 中的每个元素是否为字符串且非 None
+                safe_tags_list = [str(tag) for tag in tags_list if tag is not None]
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue  # 跳过 R18 作品
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue  # 跳过非 R18 作品
+                filtered_illusts.append(illust)
 
-                # 检查插画类型是否为 illustration (排除漫画等)
-                if illust.type != 'illust':
-                    log.debug(f"Pixiv 插件：过滤非插画类型 ID: {illust.id} (Type: {illust.type})")
-                    continue
-
-                valid_illustrations.append(illust)
-
-            if not valid_illustrations:
-                log.info(f"Pixiv 插件：过滤后没有符合条件的插画。")
-                # 根据过滤模式调整提示信息
-                if filter_r18_enabled:
-                    yield event.plain_result(f"找不到符合条件的非 R18 插画。")
-                else:
-                    yield event.plain_result(f"找不到符合条件的插画。")
+            if not filtered_illusts:
+                yield event.plain_result("未找到符合过滤条件的插画。")
                 return
 
-            log.info(f"Pixiv 插件：过滤后剩下 {len(valid_illustrations)} 个有效插画。")
+            # 限制返回数量
+            illusts_to_show = filtered_illusts[:self.return_count]
 
-            # 从有效插画中随机选择指定数量的插画 (使用配置中的 return_count)
-            selected_illusts = random.sample(valid_illustrations, min(self.return_count, len(valid_illustrations)))
-            log.info(f"Pixiv 插件：已随机选择 {len(selected_illusts)} 张插画进行发送 (根据配置 return_count={self.return_count})。")
-
-            # --- 构建并发送消息 ---
-            message_chain = []
-            # 可以添加一个提示信息
-            message_chain.append(Comp.Plain(f"为您找到与 '{search_term}' 相关的图片{' (已过滤 R18)' if filter_r18_enabled else ''}：\n"))
-
-            image_send_tasks = []
-            for illust in selected_illusts:
-                # 获取图片 URL，优先获取原始尺寸
-                img_url: Optional[str] = None
+            # 处理每个插画
+            for illust in illusts_to_show:
                 try:
-                    # 处理单页插画
-                    if illust.meta_single_page and illust.meta_single_page.get('original_image_url'):
-                        img_url = illust.meta_single_page['original_image_url']
-                    # 处理多页插画（默认取第一页）
-                    elif illust.meta_pages and len(illust.meta_pages) > 0:
-                        img_url = illust.meta_pages[0].image_urls.original
-                    # 备选方案：使用大尺寸图片 URL
-                    elif illust.image_urls and illust.image_urls.large:
-                        img_url = illust.image_urls.large
-
-                    if img_url:
-                        log.info(f"Pixiv 插件：准备发送插画 ID: {illust.id}, Title: {illust.title}, URL: {img_url}")
-                        # !! 注意：直接使用 Pixiv 的 URL 可能因为缺少 Referer 而无法被 AstrBot 或消息平台直接加载 !!
-                        # 尝试直接发送 URL。如果失败，需要考虑下载到本地再发送。
-                        message_chain.append(Comp.Image.fromURL(img_url))
-                        # 可以附加一些图片信息
-                        message_chain.append(Comp.Plain(f"Title: {illust.title}\nAuthor: {illust.user.name} (ID: {illust.user.id})\nPID: {illust.id}\n"))
-                    else:
-                        log.warning(f"Pixiv 插件：无法获取插画 ID: {illust.id} 的有效图片 URL。")
-
-                except Exception as url_err:
-                    log.error(f"Pixiv 插件：处理插画 ID {illust.id} 的 URL 时出错: {url_err}", exc_info=True)
-
-
-            # 检查是否有成功获取到图片 URL
-            if len(message_chain) <= 1: # 只有提示语，没有图片
-                 yield event.plain_result("抱歉，获取选定图片的 URL 时遇到问题。")
-                 return
-
-            # 发送包含图片的消息链
-            yield event.chain_result(message_chain)
-
-        except PixivError as e:
-            # 处理 Pixiv API 调用期间的错误
-            log.error(f"Pixiv 插件：API 调用失败 - {e}")
-            # 特别处理认证失效的情况
-            if "authenticate" in str(e).lower() or "token" in str(e).lower() or "OAuth" in str(e):
-                 self.authenticated = False # 标记为未认证
-                 log.warning("Pixiv 插件：认证似乎已失效，请检查 AstrBot 管理面板中的插件配置或重新生成 Refresh Token。")
-                 yield event.plain_result(f"Pixiv API 调用失败：认证可能已失效或凭据错误，请检查配置。错误: {e}")
-            else:
-                 yield event.plain_result(f"Pixiv API 调用失败：{e}")
+                    # 获取图片 URL
+                    image_url = illust.image_urls.large
+                    
+                    # 下载图片
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"Referer": "https://www.pixiv.net/"}
+                        async with session.get(image_url, headers=headers) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                
+                                # 优化标签格式
+                                tags_str = ""
+                                for tag in illust.tags:
+                                    if tag is not None:
+                                        if isinstance(tag, dict):
+                                            tag_name = tag.get("name", "")
+                                            translated_name = tag.get("translated_name", "")
+                                            if translated_name:
+                                                tags_str += f"{tag_name}({translated_name}), "
+                                            else:
+                                                tags_str += f"{tag_name}, "
+                                        else:
+                                            tags_str += f"{tag}, "
+                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                                
+                                # 构建详情信息
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                
+                                # 返回图片和详情
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
+                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
+                except Exception as e:
+                    logger.error(f"Pixiv 插件：处理插画时发生错误 - {e}")
+                    yield event.plain_result(f"处理插画时发生错误: {str(e)}")
         except Exception as e:
-            # 处理其他意外错误
-            log.error(f"Pixiv 插件：处理 /pixiv 命令时发生未知错误 - {e}", exc_info=True)
-            yield event.plain_result("处理 Pixiv 搜索时发生内部错误，请查看日志。")
+            logger.error(f"Pixiv 插件：搜索标签时发生错误 - {e}")
+            yield event.plain_result(f"搜索标签时发生错误: {str(e)}")
+
+    @command("pixiv_help")
+    async def pixiv_help(self, event: AstrMessageEvent):
+        """生成并返回帮助信息"""
+        help_text = """# Pixiv 搜索插件使用帮助
+
+## 基本命令
+- `/pixiv <标签1>,<标签2>,...` - 搜索含有指定标签的插画
+- `/pixiv_help` - 显示此帮助信息
+
+## 高级命令
+- `/pixiv_recommended` - 获取推荐作品
+- `/pixiv_user_search <用户名>` - 搜索Pixiv用户
+- `/pixiv_user_detail <用户ID>` - 获取指定用户的详细信息
+- `/pixiv_user_illusts <用户ID>` - 获取指定用户的作品
+- `/pixiv_novel <标签1>,<标签2>,...` - 搜索小说
+- `/pixiv_ranking [mode] [date]` - 获取排行榜作品
+- `/pixiv_related <作品ID>` - 获取与指定作品相关的其他作品
+
+## 配置说明
+- 当前 R18 模式: {r18_mode}
+- 当前返回数量: {return_count}
+
+## 注意事项
+- 标签可以使用中文、英文或日文
+- 多个标签使用英文逗号(,)分隔
+- 获取用户作品或相关作品时，ID必须为数字
+- 日期必须采用 YYYY-MM-DD 格式
+- 使用 `/命令` 或 `/命令 help` 可获取每个命令的详细说明
+    """.format(
+            r18_mode=self.r18_mode,
+            return_count=self.return_count
+        )
+        
+        # 直接返回文本，不转为图片
+        yield event.plain_result(help_text)
+
+    @command("pixiv_recommended")
+    async def pixiv_recommended(self, event: AstrMessageEvent, args: str = ""):
+        """获取 Pixiv 推荐作品"""
+        # 直接获取推荐作品，不显示帮助信息
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+
+        logger.info("Pixiv 插件：获取推荐作品")
+        try:
+            # 调用 API 获取推荐作品
+            json_result = self.client.illust_recommended()
+            if not json_result.illusts:
+                yield event.plain_result("未找到推荐作品。")
+                return
+            
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in json_result.illusts:
+                tags_list = illust.tags if illust.tags else []
+                safe_tags_list = [str(tag.get("name", tag)) if isinstance(tag, dict) else str(tag) for tag in tags_list if tag is not None]
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue
+                filtered_illusts.append(illust)
+            
+            if not filtered_illusts:
+                yield event.plain_result("未找到符合过滤条件的推荐作品。")
+                return
+
+            # 限制返回数量
+            illusts_to_show = filtered_illusts[:self.return_count]
+            
+            # 处理每个推荐作品
+            for illust in illusts_to_show:
+                try:
+                    image_url = illust.image_urls.large
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"Referer": "https://www.pixiv.net/"}
+                        async with session.get(image_url, headers=headers) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                
+                                # 优化标签格式
+                                tags_str = ""
+                                for tag in illust.tags:
+                                    if tag is not None:
+                                        if isinstance(tag, dict):
+                                            tag_name = tag.get("name", "")
+                                            translated_name = tag.get("translated_name", "")
+                                            if translated_name:
+                                                tags_str += f"{tag_name}({translated_name}), "
+                                            else:
+                                                tags_str += f"{tag_name}, "
+                                        else:
+                                            tags_str += f"{tag}, "
+                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                                
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
+                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
+                except Exception as e:
+                    logger.error(f"Pixiv 插件：处理推荐作品时发生错误 - {e}")
+                    yield event.plain_result(f"处理推荐作品时发生错误: {str(e)}")
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取推荐作品时发生错误 - {e}")
+            yield event.plain_result(f"获取推荐作品时发生错误: {str(e)}")
+
+    @command("pixiv_user")
+    async def pixiv_user_cmd(self, event: AstrMessageEvent, user_id: str):
+        """处理 /pixiv_user <用户ID> 命令，获取用户作品"""
+        # 验证用户ID是否为数字
+        if not user_id.isdigit():
+            yield event.plain_result(f"用户ID必须是数字: {user_id}")
+            return
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        logger.info(f"Pixiv 插件：获取用户作品 - ID: {user_id}")
+        try:
+            # 调用 API 获取用户作品
+            json_result = self.client.user_illusts(user_id)
+            if not json_result.illusts:
+                yield event.plain_result(f"未找到用户 {user_id} 的作品。")
+                return
+
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in json_result.illusts:
+                tags_list = illust.tags if illust.tags else []
+                safe_tags_list = [str(tag) for tag in tags_list if tag is not None]
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue
+                filtered_illusts.append(illust)
+            
+            if not filtered_illusts:
+                yield event.plain_result(f"未找到符合过滤条件的用户 {user_id} 作品。")
+                return
+
+            # 限制返回数量
+            illusts_to_show = filtered_illusts[:self.return_count]
+            
+            # 处理每个用户作品
+            for illust in illusts_to_show:
+                try:
+                    image_url = illust.image_urls.large
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"Referer": "https://www.pixiv.net/"}
+                        async with session.get(image_url, headers=headers) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                tags_str = ""
+                                for tag in illust.tags:
+                                    if tag is not None:
+                                        if isinstance(tag, dict):
+                                            tag_name = tag.get("name", "")
+                                            translated_name = tag.get("translated_name", "")
+                                            if translated_name:
+                                                tags_str += f"{tag_name}({translated_name}), "
+                                            else:
+                                                tags_str += f"{tag_name}, "
+                                        else:
+                                            tags_str += f"{tag}, "
+                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
+                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
+                except Exception as e:
+                    logger.error(f"Pixiv 插件：处理用户作品时发生错误 - {e}")
+                    yield event.plain_result(f"处理用户作品时发生错误: {str(e)}")
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取用户作品时发生错误 - {e}")
+            yield event.plain_result(f"获取用户作品时发生错误: {str(e)}")
+
+    @command("pixiv_ranking")
+    async def pixiv_ranking(self, event: AstrMessageEvent, args: str = ""):
+        """获取 Pixiv 排行榜作品"""
+        args_list = args.strip().split() if args.strip() else []
+        
+        # 如果没有传入参数或者第一个参数是 'help'，显示帮助信息
+        if not args_list or args_list[0].lower() == 'help':
+            help_text = """# Pixiv 排行榜查询
+
+## 命令格式
+`/pixiv_ranking [mode] [date]`
+
+## 参数说明
+- `mode`: 排行榜模式，可选值：
+  - 常规模式: day(默认), week, month, day_male, day_female, week_original, week_rookie, day_manga
+  - R18模式(需开启R18): day_r18, day_male_r18, day_female_r18, week_r18, week_r18g
+- `date`: 日期，格式为 YYYY-MM-DD，可选，默认为最新
+
+## 示例
+- `/pixiv_ranking` - 获取默认（每日）排行榜
+- `/pixiv_ranking week` - 获取每周排行榜
+- `/pixiv_ranking day 2023-05-01` - 获取2023年5月1日的每日排行榜
+- `/pixiv_ranking day_r18` - 获取R18每日排行榜（需开启R18模式）
+"""
+            yield event.plain_result(help_text)
+            return
+
+        # 解析参数
+        mode = args_list[0] if len(args_list) > 0 else "day"
+        date = args_list[1] if len(args_list) > 1 else None
+        
+        # 验证模式参数
+        valid_modes = [
+            "day", "week", "month", "day_male", "day_female", 
+            "week_original", "week_rookie", "day_manga",
+            "day_r18", "day_male_r18", "day_female_r18", "week_r18", "week_r18g"
+        ]
+        
+        if mode not in valid_modes:
+            yield event.plain_result(f"无效的排行榜模式: {mode}\n请使用 `/pixiv_ranking help` 查看支持的模式")
+            return
+        
+        # 验证日期格式（如果提供了日期）
+        if date:
+            try:
+                # 简单验证日期格式
+                year, month, day = date.split('-')
+                if not (len(year) == 4 and len(month) == 2 and len(day) == 2):
+                    raise ValueError("日期格式不正确")
+            except Exception:
+                yield event.plain_result(f"无效的日期格式: {date}\n日期应为 YYYY-MM-DD 格式")
+                return
+        
+        # 检查 R18 权限
+        if "r18" in mode and self.r18_mode == "过滤 R18":
+            yield event.plain_result("当前 R18 模式设置为「过滤 R18」，无法使用 R18 相关排行榜。")
+            return
+        
+        logger.info(f"Pixiv 插件：正在获取排行榜 - 模式: {mode}, 日期: {date if date else '最新'}")
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        try:
+            # 调用 Pixiv API 获取排行榜
+            ranking_result = self.client.illust_ranking(mode=mode, date=date)
+            if not ranking_result.illusts:
+                yield event.plain_result(f"未找到排行榜作品 - 模式: {mode}, 日期: {date if date else '最新'}")
+                return
+            
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in ranking_result.illusts:
+                # 检查作品是否为 R18
+                is_r18 = False
+                if hasattr(illust, 'tags') and illust.tags:
+                    for tag in illust.tags:
+                        tag_name = tag.get('name', '') if isinstance(tag, dict) else tag
+                        if isinstance(tag_name, str) and ('R-18' in tag_name or 'r-18' in tag_name):
+                            is_r18 = True
+                            break
+                
+                # 根据 R18 模式过滤
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue  # 跳过 R18 作品
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue  # 跳过非 R18 作品
+                filtered_illusts.append(illust)
+            
+            if not filtered_illusts:
+                yield event.plain_result(f"未找到符合当前 R18 模式的排行榜作品 - 模式: {mode}, 日期: {date if date else '最新'}")
+                return
+            
+            # 限制返回数量
+            count = min(len(filtered_illusts), self.return_count)
+            illusts_to_show = filtered_illusts[:count]
+            
+            # 返回结果
+            async with aiohttp.ClientSession() as session:
+                for illust in illusts_to_show:
+                    image_url = illust.image_urls.medium
+                    
+                    # 设置请求头以绕过 Pixiv 的防盗链
+                    headers = {
+                        'Referer': 'https://www.pixiv.net/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                    
+                    # 构建标签字符串
+                    tags_str = ""
+                    for tag in illust.tags:
+                        if tag is not None:
+                            if isinstance(tag, dict):
+                                tag_name = tag.get("name", "")
+                                translated_name = tag.get("translated_name", "")
+                                if translated_name:
+                                    tags_str += f"{tag_name}({translated_name}), "
+                                else:
+                                    tags_str += f"{tag_name}, "
+                            else:
+                                tags_str += f"{tag}, "
+                    tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                    
+                    # 构建详情信息
+                    detail_message = f"作品标题: {illust.title}\n"
+                    detail_message += f"作者: {illust.user.name if hasattr(illust, 'user') else '未知'}\n"
+                    detail_message += f"排名: {illusts_to_show.index(illust) + 1}\n"
+                    detail_message += f"标签: {tags_str}\n"
+                    detail_message += f"链接: https://www.pixiv.net/artworks/{illust.id}"
+                    
+                    async with session.get(image_url, headers=headers) as response:
+                        if response.status == 200:
+                            img_data = await response.read()
+                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                        else:
+                            yield event.plain_result(f"下载图片失败 - 状态码: {response.status}\n{detail_message}")
+        
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取排行榜时发生错误 - {e}")
+            yield event.plain_result(f"获取排行榜时发生错误: {str(e)}")
+
+    @command("pixiv_related")
+    async def pixiv_related(self, event: AstrMessageEvent, illust_id: str = ""):
+        """获取与指定作品相关的其他作品"""
+        # 检查参数是否为空或为 help
+        if not illust_id.strip() or illust_id.strip().lower() == 'help':
+            help_text = """# Pixiv 相关作品
+
+## 命令格式
+`/pixiv_related <作品ID>`
+
+## 参数说明
+- `作品ID`: Pixiv 作品的数字ID
+
+## 示例
+- `/pixiv_related 12345678` - 获取ID为12345678的作品的相关作品
+"""
+            yield event.plain_result(help_text)
+            return
+        
+        # 验证作品ID是否为数字
+        if not illust_id.isdigit():
+            yield event.plain_result(f"作品ID必须是数字: {illust_id}")
+            return
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        logger.info(f"Pixiv 插件：获取相关作品 - ID: {illust_id}")
+        try:
+            # 调用 API 获取相关作品
+            json_result = self.client.illust_related(illust_id)
+            if not json_result.illusts:
+                yield event.plain_result(f"未找到作品 {illust_id} 的相关作品。")
+                return
+            
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in json_result.illusts:
+                tags_list = illust.tags if illust.tags else []
+                safe_tags_list = [str(tag) for tag in tags_list if tag is not None]
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue
+                filtered_illusts.append(illust)
+            
+            if not filtered_illusts:
+                yield event.plain_result(f"未找到符合过滤条件的作品 {illust_id} 相关作品。")
+                return
+            
+            # 限制返回数量
+            illusts_to_show = filtered_illusts[:self.return_count]
+            
+            # 处理每个相关作品
+            for illust in illusts_to_show:
+                try:
+                    image_url = illust.image_urls.large
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"Referer": "https://www.pixiv.net/"}
+                        async with session.get(image_url, headers=headers) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                tags_str = ""
+                                for tag in illust.tags:
+                                    if tag is not None:
+                                        if isinstance(tag, dict):
+                                            tag_name = tag.get("name", "")
+                                            translated_name = tag.get("translated_name", "")
+                                            if translated_name:
+                                                tags_str += f"{tag_name}({translated_name}), "
+                                            else:
+                                                tags_str += f"{tag_name}, "
+                                        else:
+                                            tags_str += f"{tag}, "
+                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
+                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
+                except Exception as e:
+                    logger.error(f"Pixiv 插件：处理相关作品时发生错误 - {e}")
+                    yield event.plain_result(f"处理相关作品时发生错误: {str(e)}")
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取相关作品时发生错误 - {e}")
+            yield event.plain_result(f"获取相关作品时发生错误: {str(e)}")
+
+    @command("pixiv_user_search")
+    async def pixiv_user_search(self, event: AstrMessageEvent, username: str = ""):
+        """搜索 Pixiv 用户"""
+        # 检查参数是否为空或为 help
+        if not username.strip() or username.strip().lower() == 'help':
+            help_text = """# Pixiv 用户搜索
+
+## 命令格式
+`/pixiv_user_search <用户名>`
+
+## 参数说明
+- `用户名`: 要搜索的 Pixiv 用户名
+
+## 示例
+- `/pixiv_user_search 初音ミク` - 搜索名称包含"初音ミク"的用户
+- `/pixiv_user_search gomzi` - 搜索名称包含"gomzi"的用户
+"""
+            yield event.plain_result(help_text)
+            return
+        
+        logger.info(f"Pixiv 插件：正在搜索用户 - {username}")
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        try:
+            # 调用 Pixiv API 搜索用户
+            json_result = self.client.search_user(username)
+            if not json_result or not hasattr(json_result, 'user_previews') or not json_result.user_previews:
+                yield event.plain_result(f"未找到用户: {username}")
+                return
+
+            # 获取第一个用户
+            user_preview = json_result.user_previews[0]
+            user = user_preview.user
+            
+            # 构建用户信息
+            user_info = f"用户名: {user.name}\n"
+            user_info += f"用户ID: {user.id}\n"
+            user_info += f"账号: @{user.account}\n"
+            user_info += f"简介: {user.comment if hasattr(user, 'comment') else '无'}\n"
+            user_info += f"作品数: {user_preview.illusts_len if hasattr(user_preview, 'illusts_len') else '未知'}\n"
+            user_info += f"个人主页: https://www.pixiv.net/users/{user.id}"
+            
+            # 如果有作品，获取一个作为预览
+            if hasattr(user_preview, 'illusts') and user_preview.illusts:
+                illust = user_preview.illusts[0]
+                
+                # 构建结果消息
+                async with aiohttp.ClientSession() as session:
+                    image_url = illust.image_urls.medium
+                    
+                    # 设置请求头以绕过 Pixiv 的防盗链
+                    headers = {
+                        'Referer': 'https://www.pixiv.net/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                    
+                    async with session.get(image_url, headers=headers) as response:
+                        if response.status == 200:
+                            img_data = await response.read()
+                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(user_info)])
+                        else:
+                            # 如果无法下载图片，只返回文本信息
+                            yield event.plain_result(f"{user_info}\n\n[注意] 无法下载预览图片，状态码: {response.status}")
+            else:
+                # 如果没有作品，只返回用户信息
+                yield event.plain_result(user_info)
+                
+        except Exception as e:
+            logger.error(f"Pixiv 插件：搜索用户时发生错误 - {e}")
+            yield event.plain_result(f"搜索用户时发生错误: {str(e)}")
+
+    @command("pixiv_user_detail")
+    async def pixiv_user_detail(self, event: AstrMessageEvent, user_id: str = ""):
+        """获取 Pixiv 用户详情"""
+        # 检查参数是否为空或为 help
+        if not user_id.strip() or user_id.strip().lower() == 'help':
+            help_text = """# Pixiv 用户详情
+
+## 命令格式
+`/pixiv_user_detail <用户ID>`
+
+## 参数说明
+- `用户ID`: Pixiv 用户的数字ID
+
+## 示例
+- `/pixiv_user_detail 660788` - 获取ID为660788的用户详情
+"""
+            yield event.plain_result(help_text)
+            return
+        
+        logger.info(f"Pixiv 插件：正在获取用户详情 - ID: {user_id}")
+        
+        # 验证用户ID是否为数字
+        if not user_id.isdigit():
+            yield event.plain_result(f"用户ID必须是数字: {user_id}")
+            return
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        try:
+            # 调用 Pixiv API 获取用户详情
+            json_result = self.client.user_detail(user_id)
+            if not json_result or not hasattr(json_result, 'user'):
+                yield event.plain_result(f"未找到用户 - ID: {user_id}")
+                return
+            
+            user = json_result.user
+            profile = json_result.profile if hasattr(json_result, 'profile') else None
+            
+            # 构建用户详情信息
+            detail_info = f"用户名: {user.name}\n"
+            detail_info += f"用户ID: {user.id}\n"
+            detail_info += f"账号: @{user.account}\n"
+            
+            if profile:
+                detail_info += f"地区: {profile.region if hasattr(profile, 'region') else '未知'}\n"
+                detail_info += f"生日: {profile.birth_day if hasattr(profile, 'birth_day') else '未知'}\n"
+                detail_info += f"性别: {profile.gender if hasattr(profile, 'gender') else '未知'}\n"
+                detail_info += f"插画数: {profile.total_illusts if hasattr(profile, 'total_illusts') else '未知'}\n"
+                detail_info += f"漫画数: {profile.total_manga if hasattr(profile, 'total_manga') else '未知'}\n"
+                detail_info += f"小说数: {profile.total_novels if hasattr(profile, 'total_novels') else '未知'}\n"
+                detail_info += f"收藏数: {profile.total_illust_bookmarks_public if hasattr(profile, 'total_illust_bookmarks_public') else '未知'}\n"
+            
+            detail_info += f"简介: {user.comment if hasattr(user, 'comment') else '无'}\n"
+            detail_info += f"个人主页: https://www.pixiv.net/users/{user.id}"
+            
+            # 返回用户详情
+            yield event.plain_result(detail_info)
+            
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取用户详情时发生错误 - {e}")
+            yield event.plain_result(f"获取用户详情时发生错误: {str(e)}")
+
+    @command("pixiv_user_illusts")
+    async def pixiv_user_illusts(self, event: AstrMessageEvent, user_id: str = ""):
+        """获取 Pixiv 用户作品"""
+        # 检查参数是否为空或为 help
+        if not user_id.strip() or user_id.strip().lower() == 'help':
+            help_text = """# Pixiv 用户作品
+
+## 命令格式
+`/pixiv_user_illusts <用户ID>`
+
+## 参数说明
+- `用户ID`: Pixiv 用户的数字ID
+
+## 示例
+- `/pixiv_user_illusts 660788` - 获取ID为660788的用户的作品
+"""
+            yield event.plain_result(help_text)
+            return
+        
+        logger.info(f"Pixiv 插件：正在获取用户作品 - ID: {user_id}")
+        
+        # 验证用户ID是否为数字
+        if not user_id.isdigit():
+            yield event.plain_result(f"用户ID必须是数字: {user_id}")
+            return
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        try:
+            # 调用 Pixiv API 获取用户作品
+            json_result = self.client.user_illusts(user_id)
+            if not json_result or not hasattr(json_result, 'illusts') or not json_result.illusts:
+                yield event.plain_result(f"未找到用户作品 - ID: {user_id}")
+                return
+            
+            # 获取用户名称
+            user_name = json_result.illusts[0].user.name if json_result.illusts and hasattr(json_result.illusts[0], 'user') else "未知用户"
+            
+            # 根据 R18 模式过滤作品
+            filtered_illusts = []
+            for illust in json_result.illusts:
+                # 检查 illust.tags 是否为 None，并确保 tags 是一个列表
+                tags_list = illust.tags if illust.tags else []
+                
+                # 检查 tags_list 中的每个元素是否为字符串且非 None
+                safe_tags_list = []
+                for tag in tags_list:
+                    if isinstance(tag, dict) and 'name' in tag:
+                        safe_tags_list.append(tag['name'])
+                    elif isinstance(tag, str):
+                        safe_tags_list.append(tag)
+                
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue  # 跳过 R18 作品
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue  # 跳过非 R18 作品
+                filtered_illusts.append(illust)
+            
+            if not filtered_illusts:
+                yield event.plain_result(f"未找到符合当前 R18 模式的作品 - 用户: {user_name}({user_id})")
+                return
+            
+            # 限制返回数量
+            count = min(len(filtered_illusts), self.return_count)
+            illusts_to_show = filtered_illusts[:count]
+            
+            # 返回结果
+            async with aiohttp.ClientSession() as session:
+                for illust in illusts_to_show:
+                    image_url = illust.image_urls.medium
+                    
+                    # 设置请求头以绕过 Pixiv 的防盗链
+                    headers = {
+                        'Referer': 'https://www.pixiv.net/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                    
+                    # 构建标签字符串
+                    tags_str = ""
+                    for tag in illust.tags:
+                        if tag is not None:
+                            if isinstance(tag, dict):
+                                tag_name = tag.get("name", "")
+                                translated_name = tag.get("translated_name", "")
+                                if translated_name:
+                                    tags_str += f"{tag_name}({translated_name}), "
+                                else:
+                                    tags_str += f"{tag_name}, "
+                            else:
+                                tags_str += f"{tag}, "
+                    tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                    
+                    # 构建详情信息
+                    detail_message = f"作品标题: {illust.title}\n"
+                    detail_message += f"作者: {user_name}\n"
+                    detail_message += f"标签: {tags_str}\n"
+                    detail_message += f"链接: https://www.pixiv.net/artworks/{illust.id}"
+                    
+                    async with session.get(image_url, headers=headers) as response:
+                        if response.status == 200:
+                            img_data = await response.read()
+                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                        else:
+                            yield event.plain_result(f"下载图片失败 - 状态码: {response.status}\n{detail_message}")
+        
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取用户作品时发生错误 - {e}")
+            yield event.plain_result(f"获取用户作品时发生错误: {str(e)}")
+
+    @command("pixiv_novel")
+    async def pixiv_novel(self, event: AstrMessageEvent, tags: str = ""):
+        """搜索 Pixiv 小说"""
+        # 检查参数是否为空或为 help
+        if not tags.strip() or tags.strip().lower() == 'help':
+            help_text = """# Pixiv 小说搜索
+
+## 命令格式
+`/pixiv_novel <标签1>,<标签2>,...`
+
+## 参数说明
+- `标签`: 搜索的标签，多个标签用英文逗号分隔
+
+## 示例
+- `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
+- `/pixiv_novel 百合,GL` - 搜索同时包含"百合"和"GL"标签的小说
+"""
+            yield event.plain_result(help_text)
+            return
+        
+        logger.info(f"Pixiv 插件：正在搜索小说 - 标签: {tags}")
+        
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+        
+        try:
+            # 调用 Pixiv API 搜索小说
+            json_result = self.client.search_novel(tags, search_target="partial_match_for_tags")
+            if not json_result or not hasattr(json_result, 'novels') or not json_result.novels:
+                yield event.plain_result(f"未找到相关小说: {tags}")
+                return
+            
+            # 根据 R18 模式过滤小说
+            filtered_novels = []
+            for novel in json_result.novels:
+                # 检查 novel.tags 是否为 None，并确保 tags 是一个列表
+                tags_list = novel.tags if hasattr(novel, 'tags') and novel.tags else []
+                
+                # 检查 tags_list 中的每个元素是否为字符串且非 None
+                safe_tags_list = []
+                for tag in tags_list:
+                    if isinstance(tag, dict) and 'name' in tag:
+                        safe_tags_list.append(tag['name'])
+                    elif isinstance(tag, str):
+                        safe_tags_list.append(tag)
+                
+                is_r18 = any(tag.lower() in ["r-18", "r18"] for tag in safe_tags_list)
+                if self.r18_mode == "过滤 R18" and is_r18:
+                    continue  # 跳过 R18 小说
+                elif self.r18_mode == "仅 R18" and not is_r18:
+                    continue  # 跳过非 R18 小说
+                filtered_novels.append(novel)
+            
+            if not filtered_novels:
+                yield event.plain_result(f"未找到符合当前 R18 模式的小说: {tags}")
+                return
+            
+            # 限制返回数量
+            count = min(len(filtered_novels), self.return_count)
+            novels_to_show = filtered_novels[:count]
+            
+            # 返回结果
+            for novel in novels_to_show:
+                # 构建标签字符串
+                tags_str = ""
+                for tag in novel.tags:
+                    if isinstance(tag, dict) and 'name' in tag:
+                        tag_name = tag['name']
+                        translated_name = tag.get('translated_name', '')
+                        if translated_name:
+                            tags_str += f"{tag_name}({translated_name}), "
+                        else:
+                            tags_str += f"{tag_name}, "
+                    elif isinstance(tag, str):
+                        tags_str += f"{tag}, "
+                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+                
+                # 构建详情信息
+                detail_message = f"小说标题: {novel.title}\n"
+                detail_message += f"作者: {novel.user.name if hasattr(novel, 'user') else '未知'}\n"
+                detail_message += f"标签: {tags_str}\n"
+                detail_message += f"字数: {novel.text_length if hasattr(novel, 'text_length') else '未知'}\n"
+                if hasattr(novel, 'series') and novel.series:
+                    detail_message += f"系列: {novel.series.title if hasattr(novel.series, 'title') else '未知'}\n"
+                detail_message += f"链接: https://www.pixiv.net/novel/show.php?id={novel.id}"
+                
+                # 返回小说信息
+                yield event.plain_result(detail_message)
+        
+        except Exception as e:
+            logger.error(f"Pixiv 插件：搜索小说时发生错误 - {e}")
+            yield event.plain_result(f"搜索小说时发生错误: {str(e)}")
 
     async def terminate(self):
         """插件终止时调用的清理函数"""
-        log.info("Pixiv 搜索插件已停用。")
-        # 可选：可以在这里添加关闭 Pixiv 客户端连接的代码（如果 pixiv-api 需要）
+        logger.info("Pixiv 搜索插件已停用。")
+        # 可选：可以在这里添加关闭 Pixiv 客户端连接的代码（如果 pixivpy 需要）
         pass

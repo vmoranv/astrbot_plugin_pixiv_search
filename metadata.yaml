@@ -2,45 +2,40 @@
 id: pixiv_search
 name: Pixiv 图片搜索
 author: vmoranv
-version: 1.0.0 
+version: 1.0.0
 description: 通过标签在 Pixiv 上搜索插画。用法 /pixiv tag1,tag2,... 可在配置中设置认证信息、返回数量和 R18 过滤模式。
 repo: https://github.com/vmoranv/astrbot_plugin_pixiv_search
 requirements:
-  - pixiv-api>=1.0.0
+  - pixivpy3>=3.0.0  # 替换为 pixivpy3
+  - aiohttp>=3.8.0
 # 新增：定义插件配置项，用于 WebUI 生成配置界面
 config_schema:
-  # 认证方式一：用户名/密码 (与 Refresh Token 二选一)
-  username:
-    type: str
-    required: false # 非必填
-    default: ""
-    description: "Pixiv 用户名 (如果使用 Refresh Token，请留空)"
-  password:
-    type: str
-    required: false # 非必填
-    default: ""
-    description: "Pixiv 密码 (如果使用 Refresh Token，请留空)"
-    is_sensitive: true # 标记为敏感信息，WebUI 会隐藏显示
-  # 认证方式二：Refresh Token (与用户名/密码 二选一)
+  # 认证方式：Refresh Token (必填)
   refresh_token:
     type: str
-    required: false # 非必填
+    required: true  # 必填
     default: ""
-    description: "Pixiv Refresh Token (优先使用此项认证，如果填写，将忽略用户名/密码)"
-    is_sensitive: true # 标记为敏感信息
+    description: "Pixiv Refresh Token (必填)"
+    is_sensitive: true  # 标记为敏感信息
+  proxy:
+    type: str
+    required: false
+    default: ""
+    description: "代理服务器地址 (如果需要通过代理访问 Pixiv API)"
   # 功能配置
   return_count:
     type: int
-    required: true # 必填
+    required: true  # 必填
     default: 1
     description: "每次搜索返回的图片数量"
+    min: 1
+    max: 10
   r18_mode:
-    type: int
-    required: true # 必填
-    default: 0 # 默认值为 0
-    description: "R18 内容过滤模式 (0: 过滤 R18/R18G, 1: 允许 R18/R18G)"
-    choices:
-      - value: 0
-        label: "过滤 R18/R18G"
-      - value: 1
-        label: "允许 R18/R18G"
+    type: string
+    required: true
+    default: "过滤 R18"
+    description: "R18 内容过滤模式"
+    options:
+      - "过滤 R18"
+      - "允许 R18"
+      - "仅 R18"

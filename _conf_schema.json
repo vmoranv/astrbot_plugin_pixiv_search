@@ -1,47 +1,35 @@
 {
   "refresh_token": {
-    "type": "string",
-    "description": "Pixiv Refresh Token (推荐)",
-    "hint": "用于 API 认证的首选方式。获取方法请参考 pixiv-api 文档或网络教程。",
-    "default": ""
-  },
-  "username": {
-    "type": "string",
-    "description": "Pixiv 用户名 (备选)",
-    "hint": "如果未提供 Refresh Token，将尝试使用用户名和密码认证。",
-    "default": ""
-  },
-  "password": {
-    "type": "string",
-    "description": "Pixiv 密码 (备选)",
-    "hint": "与用户名配合使用。请注意，直接存储密码存在安全风险，强烈建议使用 Refresh Token。",
-    "default": ""
-    // "invisible": true, // 如果你希望密码不在 UI 显示，可以取消注释此行，但用户将无法通过 UI 配置
+      "description": "Pixiv Refresh Token",
+      "type": "string",
+      "hint": "用于 API 认证，安全性更高。获取方法请参考 pixiv-api 文档或网络教程。",
+      "default": "",
+      "is_sensitive": true,
+      "required": true
   },
   "proxy": {
-    "type": "string",
-    "description": "HTTP/HTTPS 代理地址 (可选)",
-    "hint": "如果你的网络访问 Pixiv API 需要代理，请在此处填写，例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
-    "default": ""
-  },
-  "r18_mode": {
-    "type": "int",
-    "description": "R18 内容过滤模式",
-    "hint": "控制搜索结果中 R18 内容的显示方式。",
-    "default": 0,
-    "options": [ // 使用 options 提供下拉选择
-      {"value": 0, "label": "0 - 过滤 R18 (默认)"},
-      {"value": 1, "label": "1 - 仅显示 R18"},
-      {"value": 2, "label": "2 - 不过滤 R18"}
-    ]
-    // 注意：AstrBot 文档中 options 的示例是 ["chat", "agent"]，但实际可能支持更复杂的结构如 {"value": 0, "label": "..."} 来提供更友好的显示。如果简单列表有效，则用 ["0 - 过滤 R18", "1 - 仅显示 R18", "2 - 不过滤 R18"]，插件代码需要相应处理字符串。如果复杂结构无效，则移除 options，仅保留 hint 说明。需要测试确认 AstrBot 的具体实现。
-    // 备选简单 options (如果上述复杂结构无效):
-    // "options": ["0", "1", "2"]
+      "description": "代理服务器地址",
+      "type": "string",
+      "hint": "如果需要通过代理访问 Pixiv API，请填写代理地址。",
+      "default": ""
   },
   "return_count": {
-    "type": "int",
-    "description": "每次搜索返回的图片数量",
-    "hint": "指定执行一次 /pixiv 命令返回多少张随机图片。",
-    "default": 1
+      "description": "每次搜索返回的图片数量",
+      "type": "int",
+      "hint": "单次 /pixiv 命令回复的图片张数。",
+      "default": 1,
+      "min": 1,
+      "max": 10
+  },
+  "r18_mode": {
+      "description": "R18 内容过滤模式",
+      "type": "string",
+      "hint": "选择如何处理 R18 内容：'过滤 R18' (默认), '允许 R18', '仅 R18'",
+      "default": "过滤 R18",
+      "options": [
+          "过滤 R18",
+          "允许 R18",
+          "仅 R18"
+      ]
   }
 } 
