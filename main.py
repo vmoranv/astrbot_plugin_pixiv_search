@@ -146,7 +146,11 @@ class PixivSearchPlugin(Star):
 
             # 随机选择或按顺序选择指定数量的作品发送
             # illusts_to_send = random.sample(filtered_illusts, min(self.return_count, len(filtered_illusts)))
-            illusts_to_send = filtered_illusts[:self.return_count] # 按顺序获取前 N 个
+            count_to_send = min(self.return_count, filtered_count)
+            if count_to_send > 0:
+                illusts_to_send = random.sample(filtered_illusts, count_to_send)
+            else:
+                illusts_to_send = []
 
             # 发送选定的插画
             for illust in illusts_to_send:
@@ -290,70 +294,86 @@ class PixivSearchPlugin(Star):
         try:
             # 调用 API 获取推荐作品
             json_result = self.client.illust_recommended()
-            if not json_result.illusts:
+            initial_illusts = json_result.illusts if json_result.illusts else []
+            initial_count = len(initial_illusts)
+
+            if not initial_illusts:
                 yield event.plain_result("未找到推荐作品。")
                 return
-            
+
             # 根据 R18 模式过滤作品
             filtered_illusts = []
-            for illust in json_result.illusts:
-                tags_list = illust.tags if illust.tags else []
-                safe_tags_list = [str(tag.get("name", tag)) if isinstance(tag, dict) else str(tag) for tag in tags_list if tag is not None]
-                # 定义所有可能的 R18 标签变体
-                r18_tags = ["r-18", "r18", "R-18", "R18", "R_18", "r_18"]
-                is_r18 = any(tag.lower() in r18_tags for tag in safe_tags_list)
-                if self.r18_mode == "过滤 R18" and is_r18:
+            # 定义所有可能的 R18 和 R-18G 标签变体
+            r18_tags_lower = {"r-18", "r18", "r_18", "r-18g", "r18g", "r_18g", "R-18", "R18", "R_18", "R-18G", "R18G", "R_18G"}
+
+            for illust in initial_illusts:
+                safe_tags_list = self._get_safe_tags(illust) # 使用辅助函数
+                is_r18_or_g = any(tag.lower() in r18_tags_lower for tag in safe_tags_list)
+
+                if self.r18_mode == "过滤 R18" and is_r18_or_g:
                     continue
-                elif self.r18_mode == "仅 R18" and not is_r18:
+                elif self.r18_mode == "仅 R18" and not is_r18_or_g:
                     continue
                 filtered_illusts.append(illust)
-            
-            if not filtered_illusts:
-                yield event.plain_result("未找到符合过滤条件的推荐作品。")
-                return
 
-            # 限制返回数量
-            illusts_to_show = filtered_illusts[:self.return_count]
+            filtered_count = len(filtered_illusts)
+
+            # --- 开始：将过滤状态消息移到这里 ---
+            if self.r18_mode == "过滤 R18" and initial_count > filtered_count:
+                yield event.plain_result(f"部分 R18/R-18G 推荐作品已被过滤 (找到 {initial_count} 个，过滤后剩 {filtered_count} 个)。")
+            # 可选：如果想在"仅 R18"模式下也提示，可以取消下面注释
+            # elif self.r18_mode == "仅 R18":
+            #     yield event.plain_result(f"仅显示 R18/R-18G 推荐作品 (找到 {filtered_count} 个)。")
+
+            if not filtered_illusts:
+                if self.r18_mode == "过滤 R18" and initial_count > 0:
+                    yield event.plain_result("所有找到的推荐作品均为 R18/R-18G 内容，已被过滤。")
+                elif self.r18_mode == "仅 R18" and initial_count > 0:
+                     yield event.plain_result("未找到符合条件的 R18/R-18G 推荐作品。")
+                return
             
-            # 处理每个推荐作品
-            for illust in illusts_to_show:
+            count_to_send = min(self.return_count, filtered_count) # 确定实际要发送的数量
+            if count_to_send > 0:
+                illusts_to_send = random.sample(filtered_illusts, count_to_send)
+            else:
+                illusts_to_send = []
+
+            # 处理每个选定的推荐作品
+            if not illusts_to_send:
+                 logger.info("没有符合条件的推荐作品可供发送。")
+
+            for illust in illusts_to_send:
                 try:
-                    image_url = illust.image_urls.large
+                    # 优先选择 large，其次 medium
+                    image_url = illust.image_urls.large if hasattr(illust.image_urls, 'large') else illust.image_urls.medium
                     async with aiohttp.ClientSession() as session:
-                        headers = {"Referer": "https://www.pixiv.net/"}
-                        async with session.get(image_url, headers=headers) as response:
+                        # 使用正确的 Referer
+                        async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}, proxy=self.proxy) as response:
                             if response.status == 200:
                                 img_data = await response.read()
-                                
-                                # 优化标签格式
-                                tags_str = ""
-                                for tag in illust.tags:
-                                    if tag is not None:
-                                        if isinstance(tag, dict):
-                                            tag_name = tag.get("name", "")
-                                            translated_name = tag.get("translated_name", "")
-                                            if translated_name:
-                                                tags_str += f"{tag_name}({translated_name}), "
-                                            else:
-                                                tags_str += f"{tag_name}, "
-                                        else:
-                                            tags_str += f"{tag}, "
-                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
-                                
+
+                                # 使用辅助函数格式化标签
+                                tags_str = self._format_tags(illust.tags)
+
                                 detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
                                 yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
                             else:
-                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
-                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
-                except Exception as e:
-                    logger.error(f"Pixiv 插件：处理推荐作品时发生错误 - {e}")
-                    yield event.plain_result(f"处理推荐作品时发生错误: {str(e)}")
+                                logger.error(f"Pixiv 插件：下载推荐图片失败 - 状态码: {response.status}, URL: {image_url}")
+                                # 如果下载失败，只发送文字信息
+                                tags_str = self._format_tags(illust.tags)
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                yield event.plain_result(f"图片下载失败({response.status})，仅发送信息：\n{detail_message}")
+                except Exception as img_e:
+                    logger.error(f"Pixiv 插件：处理推荐作品时发生错误 - {img_e}, Illust ID: {illust.id}")
+                    tags_str = self._format_tags(illust.tags)
+                    detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                    yield event.plain_result(f"图片处理失败，仅发送信息：\n{detail_message}")
 
-            # 在返回结果时，添加过滤信息
-            if self.r18_mode == "过滤 R18":
-                yield event.plain_result("已过滤 R18 内容。")
-            elif self.r18_mode == "仅 R18":
-                yield event.plain_result("仅返回 R18 内容。")
+            # --- 移除旧的过滤信息提示 ---
+            # if self.r18_mode == "过滤 R18":
+            #     yield event.plain_result("已过滤 R18 内容。")
+            # elif self.r18_mode == "仅 R18":
+            #     yield event.plain_result("仅返回 R18 内容。")
         except Exception as e:
             logger.error(f"Pixiv 插件：获取推荐作品时发生错误 - {e}")
             yield event.plain_result(f"获取推荐作品时发生错误: {str(e)}")
@@ -590,8 +610,8 @@ class PixivSearchPlugin(Star):
             yield event.plain_result(f"获取排行榜时发生错误: {str(e)}")
 
     @command("pixiv_related")
-    async def pixiv_related(self, event: AstrMessageEvent, illust_id: str = ""):
-        """获取与指定作品相关的其他作品"""
+    async def pixiv_related(self, event: AstrMessageEvent, illust_id: str):
+        """处理 /pixiv_related <作品ID> 命令，获取相关作品"""
         # 检查参数是否为空或为 help
         if not illust_id.strip() or illust_id.strip().lower() == 'help':
             help_text = """# Pixiv 相关作品
@@ -622,67 +642,76 @@ class PixivSearchPlugin(Star):
         try:
             # 调用 API 获取相关作品
             json_result = self.client.illust_related(illust_id)
-            if not json_result.illusts:
-                yield event.plain_result(f"未找到作品 {illust_id} 的相关作品。")
+            initial_illusts = json_result.illusts if json_result.illusts else []
+            initial_count = len(initial_illusts)
+
+            if not initial_illusts:
+                yield event.plain_result(f"未找到与作品 {illust_id} 相关的作品。")
                 return
 
             # 根据 R18 模式过滤作品
             filtered_illusts = []
-            for illust in json_result.illusts:
-                tags_list = illust.tags if illust.tags else []
-                safe_tags_list = [str(tag) for tag in tags_list if tag is not None]
-                # 定义所有可能的 R18 标签变体
-                r18_tags = ["r-18", "r18", "R-18", "R18", "R_18", "r_18"]
-                is_r18 = any(tag.lower() in r18_tags for tag in safe_tags_list)
-                if self.r18_mode == "过滤 R18" and is_r18:
+            # 定义所有可能的 R18 和 R-18G 标签变体 (忽略大小写)
+            r18_tags_lower = {"r-18", "r18", "r_18", "r-18g", "r18g", "r_18g", "R-18", "R18", "R_18", "R-18G", "R18G", "R_18G"}
+
+            for illust in initial_illusts:
+                safe_tags_list = self._get_safe_tags(illust) # 使用辅助函数
+                is_r18_or_g = any(tag.lower() in r18_tags_lower for tag in safe_tags_list)
+
+                if self.r18_mode == "过滤 R18" and is_r18_or_g:
                     continue
-                elif self.r18_mode == "仅 R18" and not is_r18:
+                elif self.r18_mode == "仅 R18" and not is_r18_or_g:
                     continue
                 filtered_illusts.append(illust)
-            
+
+            filtered_count = len(filtered_illusts)
+
+            if self.r18_mode == "过滤 R18" and initial_count > filtered_count:
+                yield event.plain_result(f"部分 R18/R-18G 相关作品已被过滤 (找到 {initial_count} 个，过滤后剩 {filtered_count} 个)。")
+
             if not filtered_illusts:
-                yield event.plain_result(f"未找到符合过滤条件的作品 {illust_id} 相关作品。")
+                if self.r18_mode == "过滤 R18" and initial_count > 0:
+                    yield event.plain_result(f"所有找到的相关作品均为 R18/R-18G 内容，已被过滤。")
+                elif self.r18_mode == "仅 R18" and initial_count > 0:
+                     yield event.plain_result(f"未找到符合条件的 R18/R-18G 相关作品。")
                 return
-            
-            # 限制返回数量
-            illusts_to_show = filtered_illusts[:self.return_count]
-            
-            # 处理每个相关作品
-            for illust in illusts_to_show:
+
+            count_to_send = min(self.return_count, filtered_count) # 确定实际要发送的数量
+            if count_to_send > 0:
+                illusts_to_send = random.sample(filtered_illusts, count_to_send)
+            else:
+                illusts_to_send = []
+
+            # 处理每个选定的相关作品
+            if not illusts_to_send:
+                 logger.info("没有符合条件的相关作品可供发送。")
+
+            for illust in illusts_to_send:
                 try:
-                    image_url = illust.image_urls.large
+                    # 优先选择 large，其次 medium
+                    image_url = illust.image_urls.large if hasattr(illust.image_urls, 'large') else illust.image_urls.medium
                     async with aiohttp.ClientSession() as session:
-                        headers = {"Referer": "https://www.pixiv.net/"}
-                        async with session.get(image_url, headers=headers) as response:
+                         # 使用正确的 Referer
+                        async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}, proxy=self.proxy) as response:
                             if response.status == 200:
                                 img_data = await response.read()
-                                tags_str = ""
-                                for tag in illust.tags:
-                                    if tag is not None:
-                                        if isinstance(tag, dict):
-                                            tag_name = tag.get("name", "")
-                                            translated_name = tag.get("translated_name", "")
-                                            if translated_name:
-                                                tags_str += f"{tag_name}({translated_name}), "
-                                            else:
-                                                tags_str += f"{tag_name}, "
-                                        else:
-                                            tags_str += f"{tag}, "
-                                tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
+
+                                # 使用辅助函数格式化标签
+                                tags_str = self._format_tags(illust.tags)
+
                                 detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
                                 yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
                             else:
-                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
-                                yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
-                except Exception as e:
-                    logger.error(f"Pixiv 插件：处理相关作品时发生错误 - {e}")
-                    yield event.plain_result(f"处理相关作品时发生错误: {str(e)}")
-
-            # 在返回结果时，添加过滤信息
-            if self.r18_mode == "过滤 R18":
-                yield event.plain_result("已过滤 R18 内容。")
-            elif self.r18_mode == "仅 R18":
-                yield event.plain_result("仅返回 R18 内容。")
+                                logger.error(f"Pixiv 插件：下载相关图片失败 - 状态码: {response.status}, URL: {image_url}")
+                                # 如果下载失败，只发送文字信息
+                                tags_str = self._format_tags(illust.tags)
+                                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                                yield event.plain_result(f"图片下载失败({response.status})，仅发送信息：\n{detail_message}")
+                except Exception as img_e:
+                    logger.error(f"Pixiv 插件：处理相关作品时发生错误 - {img_e}, Illust ID: {illust.id}")
+                    tags_str = self._format_tags(illust.tags)
+                    detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                    yield event.plain_result(f"图片处理失败，仅发送信息：\n{detail_message}")
         except Exception as e:
             logger.error(f"Pixiv 插件：获取相关作品时发生错误 - {e}")
             yield event.plain_result(f"获取相关作品时发生错误: {str(e)}")
@@ -1007,30 +1036,23 @@ class PixivSearchPlugin(Star):
                 is_r18_or_g = any(tag.lower() in r18_tags_lower for tag in safe_tags_list)
 
                 if self.r18_mode == "过滤 R18" and is_r18_or_g:
-                    continue  # 跳过 R18 或 R-18G 小说
+                    continue
                 elif self.r18_mode == "仅 R18" and not is_r18_or_g:
-                    continue  # 跳过非 R18 或 R-18G 小说
-                # 如果是 "允许 R18" 或 过滤/仅R18 模式下符合条件，则添加
+                    continue
                 filtered_novels.append(novel)
 
             filtered_count = len(filtered_novels)
 
-            # --- 开始：将过滤状态消息移到这里 ---
             if self.r18_mode == "过滤 R18" and initial_count > filtered_count:
                 yield event.plain_result(f"部分 R18/R-18G 内容已被过滤 (找到 {initial_count} 个，过滤后剩 {filtered_count} 个)。")
-            # 可选：如果想在"仅 R18"模式下也提示，可以取消下面注释
-            # elif self.r18_mode == "仅 R18":
-            #     yield event.plain_result(f"仅显示 R18/R-18G 内容 (找到 {filtered_count} 个)。")
 
             if not filtered_novels:
                 if self.r18_mode == "过滤 R18" and initial_count > 0:
                     yield event.plain_result("所有找到的小说均为 R18/R-18G 内容，已被过滤。")
                 elif self.r18_mode == "仅 R18" and initial_count > 0:
                      yield event.plain_result("未找到符合条件的 R18/R-18G 小说。")
-                # else: # 如果初始就没找到，前面已经处理过了
-                #     yield event.plain_result("未找到符合条件的相关小说。")
-                return # 没有可发送的内容，直接返回
-            # --- 结束：过滤状态消息 ---
+                return
+
 
             # 限制返回数量
             count = min(filtered_count, self.return_count)
@@ -1052,12 +1074,6 @@ class PixivSearchPlugin(Star):
 
                 # 返回小说信息
                 yield event.plain_result(detail_message)
-
-            # --- 移除旧的过滤信息提示 ---
-            # if self.r18_mode == "过滤 R18":
-            #     yield event.plain_result("已过滤 R18 内容。")
-            # elif self.r18_mode == "仅 R18":
-            #     yield event.plain_result("仅返回 R18 内容。")
 
         except Exception as e:
             logger.error(f"Pixiv 插件：搜索小说时发生错误 - {e}")
