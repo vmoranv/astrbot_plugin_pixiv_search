@@ -6,11 +6,9 @@ version: 1.0.0
 description: 通过标签在 Pixiv 上搜索插画。用法 /pixiv tag1,tag2,... 可在配置中设置认证信息、返回数量和 R18 过滤模式。
 repo: https://github.com/vmoranv/astrbot_plugin_pixiv_search
 requirements:
-  - pixivpy3>=3.0.0  # 替换为 pixivpy3
+  - pixivpy3>=3.0.0
   - aiohttp>=3.8.0
-# 新增：定义插件配置项，用于 WebUI 生成配置界面
 config_schema:
-  # 认证方式：Refresh Token (必填)
   refresh_token:
     type: str
     required: true  # 必填
@@ -22,10 +20,9 @@ config_schema:
     required: false
     default: ""
     description: "代理服务器地址 (如果需要通过代理访问 Pixiv API)"
-  # 功能配置
   return_count:
     type: int
-    required: true  # 必填
+    required: true
     default: 1
     description: "每次搜索返回的图片数量"
     min: 1

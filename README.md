@@ -31,7 +31,7 @@
 * Python >= 3.10
 * Git
 * 已成功部署并运行的 AstrBot 实例 (v3.x 或更高版本) - 参考 [源码部署](https://astrbot.app/deploy/astrbot/cli.html) 或 [Docker 部署](https://astrbot.app/deploy/astrbot/docker.html)
-* 一个有效的 Pixiv 账号，并已获取 `refresh_token` (推荐) 或知道用户名密码。获取 `refresh_token` 方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[Pixiv OAuth](https://gist.github.com/ZipFile/c9ebedb224406f4f11845ab700124362)。
+* 一个有效的 Pixiv 账号，并已获取 `refresh_token` (推荐) 。获取 `refresh_token` 方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[Pixiv OAuth](https://gist.github.com/ZipFile/c9ebedb224406f4f11845ab700124362)。
 
 ### 安装插件
 
@@ -62,40 +62,13 @@
 为了让插件能够访问 Pixiv API 并按需工作，你需要进行配置。
 
 1. **通过 AstrBot WebUI 配置 (推荐)**:
-    * 在 AstrBot WebUI 的 `插件市场` -> `本地插件` 中找到该插件，点击 `管理` -> `配置`。
+    * 在 AstrBot WebUI 的 `插件管理` 中找到该插件，点击 `操作`->`插件配置`。
     * 在配置页面中，填写以下信息：
         * **Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。
         * **代理服务器地址**: 可选，如果需要通过代理访问 Pixiv API，请填写代理地址。
         * **R18 过滤模式**: 选择如何处理 R18 内容，默认为 "过滤 R18"。
         * **每次返回的图片数量**: 设置每次搜索返回的图片数量，默认为 1，范围为 1-10。
     * 保存配置。
-
-2. **通过 `config.yaml` 文件配置 (备选)**:
-    * 在你的 AstrBot 数据目录下，找到插件的配置目录：`data/plugins/astrbot_plugin_pixiv_search/`。
-    * 在该目录下创建一个名为 `config.yaml` 的文件 (如果不存在)。
-    * 将你的配置信息添加到 `config.yaml` 文件中，格式如下：
-
-    ```yaml
-    # data/plugins/astrbot_plugin_pixiv_search/config.yaml
-    
-    # --- 认证方式 ---
-    # 使用 Refresh Token (必填)
-    pixiv_refresh_token: "你的_refresh_token_粘贴在这里"
-    
-    # --- 可选配置 ---
-    # 代理服务器地址 (如果需要)
-    # pixiv_proxy: "http://your_proxy_server:port"
-    
-    # R18 过滤模式 (0=过滤R18, 1=仅R18, 2=不过滤)
-    r18_mode: 0
-    
-    # 每次返回的图片数量
-    return_count: 1
-    ```
-    * 保存文件。
-    * 在 AstrBot WebUI 中重载该插件，使配置生效。
-
-插件会优先使用 `refresh_token` 进行认证，如果未提供，则尝试使用用户名和密码。
 
 ### 使用方法
 
@@ -110,6 +83,7 @@
 
 *   使用英文逗号 `,` 分隔多个标签。
 *   标签可以是中文、英文或日文。
+*   多个标签是 `或` 关系。
 
 例如：
 
