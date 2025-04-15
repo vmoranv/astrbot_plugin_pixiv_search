@@ -3,6 +3,8 @@
 [![文档](https://img.shields.io/badge/AstrBot-%E6%96%87%E6%A1%A3-blue)](https://astrbot.app)
 [![aiohttp](https://img.shields.io/pypi/v/aiohttp.svg)](https://pypi.org/project/aiohttp/)
 
+![:@astrbot_plugin_pixiv_search](https://count.getloli.com/get/@astrbot_plugin_pixiv_search?theme=booru-lewd)
+
 这是一个为 [AstrBot](https://astrbot.app) 开发的插件，允许用户通过 Pixiv 标签搜索插画。
 
 ## ✨ 功能特性
