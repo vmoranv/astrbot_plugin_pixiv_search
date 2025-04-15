@@ -22,7 +22,7 @@ except ImportError:
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.0.0",
+    "1.0.1",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -897,16 +897,16 @@ class PixivSearchPlugin(Star):
             # 限制返回数量
             count = min(len(filtered_illusts), self.return_count)
             illusts_to_show = filtered_illusts[:count]
-            
-            # --- 结束：过滤状态消息 ---
+            filtered_count = len(filtered_illusts)
 
-            # --- 修改：使用 random.sample 进行随机抽取 ---
-            count_to_send = min(self.return_count, filtered_count) # 确定实际要发送的数量
+            if self.r18_mode == "过滤 R18" and len(json_result.illusts) > filtered_count:
+                yield event.plain_result(f"部分 R18 内容已被过滤 (找到 {len(json_result.illusts)} 个，过滤后剩 {filtered_count} 个)。")
+
+            count_to_send = min(self.return_count, filtered_count) 
             if count_to_send > 0:
                 illusts_to_send = random.sample(filtered_illusts, count_to_send)
             else:
                 illusts_to_send = [] # 如果过滤后为0，则发送空列表
-            # --- 结束修改部分 ---
 
             # 发送选定的插画
             if not illusts_to_send:
@@ -1016,10 +1016,16 @@ class PixivSearchPlugin(Star):
                 return # 没有可发送的内容，直接返回
 
             # 限制返回数量
-            count = min(filtered_count, self.return_count)
-            novels_to_show = filtered_novels[:count]
+            count_to_send = min(filtered_count, self.return_count) # 确定实际要发送的数量
+            if count_to_send > 0:
+                novels_to_show = random.sample(filtered_novels, count_to_send)
+            else:
+                novels_to_show = [] # 如果过滤后为0，则发送空列表
 
             # 返回结果
+            if not novels_to_show:
+                 logger.info("没有符合条件的小说可供发送。") # 可以加个日志
+
             for novel in novels_to_show:
                 # 构建标签字符串 (使用辅助函数)
                 tags_str = self._format_tags(novel.tags)
