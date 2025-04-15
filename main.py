@@ -55,31 +55,29 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.0.0",
+            "version": "1.0.1",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
     async def _authenticate(self) -> bool:
         """尝试使用配置的凭据进行 Pixiv API 认证"""
-        if self.authenticated:
-            return True
-
-        logger.info("Pixiv 插件：尝试进行 Pixiv API 认证...")
+        # 每次调用都尝试认证，让 pixivpy3 处理 token 状态
+        logger.info("Pixiv 插件：尝试进行 Pixiv API 认证/状态检查...")
         try:
             if self.refresh_token:
-                logger.info("使用 Refresh Token 进行认证...")
-                self.client.auth(refresh_token=self.refresh_token)  # 仅使用 refresh_token
-                self.authenticated = True
-                logger.info("Pixiv 插件：认证成功。")
+                # 调用 auth()，pixivpy3 会在需要时刷新 token
+                self.client.auth(refresh_token=self.refresh_token)
+                logger.info("Pixiv 插件：认证状态检查/刷新完成。")
                 return True
             else:
                 logger.error("Pixiv 插件：未提供有效的 Refresh Token，无法进行认证。")
-                return False
+                return False # 明确返回 False
 
         except Exception as e:
-            logger.error(f"Pixiv 插件：认证失败 - 异常类型: {type(e)}, 错误信息: {e}, 异常详情: {e.__dict__}")
-            logger.warning("Pixiv 插件：API 认证失败，请检查配置中的凭据信息。")
-            return False
+            # 捕获更具体的异常可能更好，但 Exception 可以作为保底
+            logger.error(f"Pixiv 插件：认证/刷新时发生错误 - 异常类型: {type(e)}, 错误信息: {e}")
+            # 发生错误时，认为认证失败
+            return False # 明确返回 False
 
     @command("pixiv")
     async def pixiv(self, event: AstrMessageEvent, tags: str):
