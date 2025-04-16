@@ -68,9 +68,10 @@
     * 在 AstrBot WebUI 的 `插件管理` 中找到该插件，点击 `操作`->`插件配置`。
     * 在配置页面中，填写以下信息：
         * **Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。
-        * **代理服务器地址**: 可选，如果需要通过代理访问 Pixiv API，请填写代理地址。
         * **R18 过滤模式**: 选择如何处理 R18 内容，默认为 "过滤 R18"。
         * **每次返回的图片数量**: 设置每次搜索返回的图片数量，默认为 1，范围为 1-10。
+        * **AI 作品显示**: 选择是否显示 AI 生成的作品，默认为 "显示"。
+    * 有关代理配置，请参考 [AstrBot 文档](https://astrbot.app/config/astrbot-config.html#http-proxy)。
     * 保存配置。
 
 ### 使用方法
