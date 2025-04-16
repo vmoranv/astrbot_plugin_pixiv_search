@@ -125,3 +125,5 @@
 ## 支持
 
 如需更多帮助，请访问 [AstrBot 官方文档](https://astrbot.app/)
+
+***重要***:如果遇到`SSLError`请更新DNS解析,移步至该issue:[SSLError](https://github.com/upbit/pixivpy/issues/244)
