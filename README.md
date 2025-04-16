@@ -24,7 +24,8 @@
   - **仅 R18**: 仅返回 R18 作品。
 * **数量控制**: 可配置每次搜索返回的图片数量。
 * **安全配置**: 通过 AstrBot 插件配置系统安全管理 Pixiv API 凭据。
-* **代理支持**: 支持通过 HTTP/HTTPS 代理访问 Pixiv API。
+* **趋势标签**: 获取插画趋势标签。
+* **AI 作品显示**: 可配置是否显示 AI 生成的作品。
 
 ## 🚀 开始使用
 
@@ -104,6 +105,8 @@
 /pixiv_novel <标签1>,<标签2>,...  # 搜索小说
 /pixiv_ranking [mode] [date]  # 获取排行榜作品
 /pixiv_related <作品ID>  # 获取与指定作品相关的其他作品
+/pixiv_trending_tags  # 获取插画趋势标签
+/pixiv_toggle_ai [on|off|only]  # 设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
 ```
 
 所有命令（除 `/pixiv_recommended`）在参数缺省时会显示详细的帮助信息。

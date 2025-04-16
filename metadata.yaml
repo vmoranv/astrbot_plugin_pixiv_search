@@ -2,7 +2,7 @@
 id: pixiv_search
 name: Pixiv 图片搜索
 author: vmoranv
-version: 1.0.1
+version: 1.0.2
 description: 通过标签在 Pixiv 上搜索插画。用法 /pixiv tag1,tag2,... 可在配置中设置认证信息、返回数量和 R18 过滤模式。
 repo: https://github.com/vmoranv/astrbot_plugin_pixiv_search
 requirements:
@@ -15,11 +15,6 @@ config_schema:
     default: ""
     description: "Pixiv Refresh Token (必填)"
     is_sensitive: true  # 标记为敏感信息
-  proxy:
-    type: str
-    required: false
-    default: ""
-    description: "代理服务器地址 (如果需要通过代理访问 Pixiv API)"
   return_count:
     type: int
     required: true
@@ -36,3 +31,8 @@ config_schema:
       - "过滤 R18"
       - "允许 R18"
       - "仅 R18"
+  show_ai_works:
+    type: bool
+    required: true
+    default: true
+    description: "是否显示 AI 生成的作品"

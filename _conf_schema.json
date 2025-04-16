@@ -7,12 +7,6 @@
       "is_sensitive": true,
       "required": true
   },
-  "proxy": {
-      "description": "代理服务器地址",
-      "type": "string",
-      "hint": "如果需要通过代理访问 Pixiv API，请填写代理地址。",
-      "default": ""
-  },
   "return_count": {
       "description": "每次搜索返回的图片数量",
       "type": "int",
@@ -30,6 +24,17 @@
           "过滤 R18",
           "允许 R18",
           "仅 R18"
+      ]
+  },
+  "ai_filter_mode": {
+      "description": "AI 生成作品过滤模式",
+      "type": "string",
+      "hint": "选择如何处理 AI 生成的作品：'显示 AI 作品' (默认), '过滤 AI 作品', '仅 AI 作品'",
+      "default": "显示 AI 作品",
+      "options": [
+          "显示 AI 作品",
+          "过滤 AI 作品",
+          "仅 AI 作品"
       ]
   }
 } 
