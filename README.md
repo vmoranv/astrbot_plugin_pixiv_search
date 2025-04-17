@@ -26,6 +26,7 @@
 * **安全配置**: 通过 AstrBot 插件配置系统安全管理 Pixiv API 凭据。
 * **趋势标签**: 获取插画趋势标签。
 * **AI 作品显示**: 可配置是否显示 AI 生成的作品。
+* **深度搜索**: 使用 `/pixiv_deep_search <标签1>,<标签2>,...` 命令进行深度搜索，返回更多相关作品。
 
 ## 🚀 开始使用
 
@@ -108,6 +109,7 @@
 /pixiv_related <作品ID>  # 获取与指定作品相关的其他作品
 /pixiv_trending_tags  # 获取插画趋势标签
 /pixiv_toggle_ai [on|off|only]  # 设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
+/pixiv_deep_search <标签1>,<标签2>,...  # 深度搜索
 ```
 
 所有命令（除 `/pixiv_recommended`）在参数缺省时会显示详细的帮助信息。

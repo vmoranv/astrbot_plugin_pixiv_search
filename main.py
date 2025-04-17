@@ -22,7 +22,7 @@ except ImportError:
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.0.2",
+    "1.0.3",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -55,7 +55,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.0.2",
+            "version": "1.0.3",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
@@ -319,11 +319,12 @@ class PixivSearchPlugin(Star):
 - `/pixiv_related <作品ID>` - 获取与指定作品相关的其他作品
 - `/pixiv_trending_tags` - 获取当前的插画趋势标签
 - `/pixiv_toggle_ai [on|off|only]` - 设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
+- `/pixiv_deepsearch <标签1>,<标签2>,...` - 深度搜索插画（跨多页）
 
-## 配置说明
 - 当前 R18 模式: {r18_mode}
 - 当前返回数量: {return_count}
 - 当前 AI 作品模式: {ai_filter_mode}
+- 深度搜索翻页深度: {deep_search_depth}
 
 ## 注意事项
 - 标签可以使用中文、英文或日文
@@ -334,9 +335,10 @@ class PixivSearchPlugin(Star):
     """.format(
             r18_mode=self.r18_mode,
             return_count=self.return_count,
-            ai_filter_mode=self.ai_filter_mode
+            ai_filter_mode=self.ai_filter_mode,
+            deep_search_depth=self.config.get("deep_search_depth", 3)
         )
-        
+
         # 直接返回文本，不转为图片
         yield event.plain_result(help_text)
 
@@ -1236,6 +1238,161 @@ class PixivSearchPlugin(Star):
         else:
             # 无效参数
             yield event.plain_result(f"无效的模式 '{mode}'。请使用以下模式之一: {valid_modes_display}")
+
+    @command("pixiv_deepsearch")
+    async def pixiv_deepsearch(self, event: AstrMessageEvent, tags: str):
+        """
+        深度搜索 Pixiv 插画，通过翻页获取多页结果
+        用法: /pixiv_deepsearch <标签1>,<标签2>,...
+        注意: 翻页深度由配置中的 deep_search_depth 参数控制
+        """
+        # 验证用户输入
+        if not tags or tags.strip().lower() == "help":
+            yield event.plain_result(
+                "用法: /pixiv_deepsearch <标签1>,<标签2>,...\n"
+                "深度搜索 Pixiv 插画，将遍历多个结果页面。\n"
+                f"当前翻页深度设置: {self.config.get('deep_search_depth', 3)} 页 (-1 表示获取所有页面)"
+            )
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+
+        # 获取翻页深度配置
+        deep_search_depth = self.config.get("deep_search_depth", 3)
+        
+        # 处理标签
+        tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        if not tag_list:
+            yield event.plain_result("请提供至少一个有效的标签。")
+            return
+
+        # 日志记录
+        tag_str = ", ".join(tag_list)
+        logger.info(f"Pixiv 插件：正在深度搜索标签 - {tag_str}，翻页深度: {deep_search_depth}")
+        
+        # 搜索前发送提示消息
+        if deep_search_depth == -1:
+            yield event.plain_result(f"正在深度搜索标签「{tag_str}」，将获取所有页面的结果，这可能需要一些时间...")
+        else:
+            yield event.plain_result(f"正在深度搜索标签「{tag_str}」，将获取 {deep_search_depth} 页结果，这可能需要一些时间...")
+        
+        try:
+            # 准备搜索参数
+            search_params = {
+                "word": " ".join(tag_list),
+                "search_target": "partial_match_for_tags",
+                "sort": "popular_desc",
+                "filter": "for_ios",
+                "req_auth": True
+            }
+            
+            # 执行初始搜索
+            all_illusts = []
+            page_count = 0
+            next_params = search_params.copy()
+            
+            # 循环获取多页结果
+            while next_params:
+                # 限制页数
+                if deep_search_depth > 0 and page_count >= deep_search_depth:
+                    break
+                
+                # 搜索当前页
+                json_result = self.client.search_illust(**next_params)
+                if not json_result or not hasattr(json_result, 'illusts'):
+                    break
+                
+                # 收集当前页的插画
+                current_illusts = json_result.illusts
+                if current_illusts:
+                    all_illusts.extend(current_illusts)
+                    page_count += 1
+                    logger.info(f"Pixiv 插件：已获取第 {page_count} 页，找到 {len(current_illusts)} 个插画")
+                    
+                    # 发送进度更新
+                    if page_count % 3 == 0:  # 每3页发送一次进度更新
+                        yield event.plain_result(f"搜索进行中：已获取 {page_count} 页，共 {len(all_illusts)} 个结果...")
+                else:
+                    break  # 当前页没有结果，结束循环
+                
+                # 获取下一页参数
+                next_url = json_result.next_url
+                next_params = self.client.parse_qs(next_url) if next_url else None
+                
+                # 避免请求过于频繁
+                if next_params:
+                    await asyncio.sleep(1)  # 添加延迟，避免请求过快
+            
+            # 检查是否有结果
+            if not all_illusts:
+                yield event.plain_result(f"未找到与「{tag_str}」相关的插画。")
+                return
+            
+            # 记录找到的总数量
+            initial_count = len(all_illusts)
+            logger.info(f"Pixiv 插件：深度搜索完成，共找到 {initial_count} 个插画，开始过滤处理...")
+            yield event.plain_result(f"搜索完成！共获取 {page_count} 页，找到 {initial_count} 个结果，正在处理...")
+            
+            # 进行 R18 和 AI 过滤
+            filtered_illusts = self._filter_illusts(all_illusts)
+            filtered_count = len(filtered_illusts)
+            
+            # 如果过滤后结果为空，提供反馈
+            if not filtered_illusts:
+                if initial_count > 0:
+                    yield event.plain_result(f"根据当前的过滤设置 (R18: '{self.r18_mode}', AI: '{self.ai_filter_mode}')，所有找到的作品 ({initial_count} 个) 均已被排除。")
+                return
+            
+            # 打乱顺序，随机选择作品
+            random.shuffle(filtered_illusts)
+            count_to_send = min(filtered_count, self.return_count)
+            selected_illusts = filtered_illusts[:count_to_send]
+            
+            # 发送过滤信息
+            if filtered_count < initial_count:
+                if self.r18_mode == "过滤 R18" or self.ai_filter_mode != "显示 AI 作品":
+                    filter_msg = f"部分作品已被过滤 (找到 {initial_count} 个，过滤后剩 {filtered_count} 个)。"
+                    yield event.plain_result(filter_msg)
+
+            # 发送结果
+            if not selected_illusts:
+                 logger.info("深度搜索后没有符合条件的插画可供发送。")
+
+            for illust in selected_illusts:
+                # 优化标签格式
+                tags_str = self._format_tags(illust.tags)
+
+                # 构建详情信息
+                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+
+                # 尝试下载并发送图片
+                # 优先尝试 large，如果失败或不存在则尝试 medium
+                image_url = illust.image_urls.large if hasattr(illust.image_urls, 'large') else illust.image_urls.medium
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        # 添加 Referer 头，模拟浏览器请求，提高成功率
+                        async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                # 发送图片和文字
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
+                                # 如果下载失败，只发送文字信息
+                                yield event.plain_result(f"图片下载失败，仅发送信息：\n{detail_message}")
+                except Exception as img_e:
+                    logger.error(f"Pixiv 插件：下载或处理图片时发生错误 - {img_e}, URL: {image_url}")
+                    yield event.plain_result(f"图片处理失败，仅发送信息：\n{detail_message}")
+                await asyncio.sleep(0.5)
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：深度搜索时发生错误 - {e}")
+            yield event.plain_result(f"深度搜索时发生错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     async def terminate(self):
         """插件终止时调用的清理函数"""

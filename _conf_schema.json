@@ -36,5 +36,13 @@
           "过滤 AI 作品",
           "仅 AI 作品"
       ]
+  },
+  "deep_search_depth": {
+      "description": "深度搜索翻页深度",
+      "type": "int",
+      "hint": "使用 /pixiv_deepsearch 时的翻页深度，设为 -1 表示获取所有页面。",
+      "default": 3,
+      "min": -1,
+      "max": 50
   }
 } 
