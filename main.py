@@ -7,9 +7,9 @@ import aiohttp
 # AstrBot 核心库导入
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger  # 导入全局 logger
+from astrbot.api import logger  
 import astrbot.api.message_components as Comp
-from astrbot.api.all import command  # 导入 command 装饰器
+from astrbot.api.all import command  
 
 # 尝试导入 pixivpy 库
 try:
@@ -22,7 +22,7 @@ except ImportError:
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.0.3",
+    "1.0.4",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -36,9 +36,9 @@ class PixivSearchPlugin(Star):
     """
     def __init__(self, context: Context, config: Dict[str, Any]):
         """初始化 Pixiv 插件"""
-        super().__init__(context)  # 调用父类的初始化方法
+        super().__init__(context)  
         self.config = config
-        self.client = AppPixivAPI()  # 移除 client_id 和 client_secret
+        self.client = AppPixivAPI()  
         self.authenticated = False
         self.refresh_token = self.config.get("refresh_token", None)
         self.return_count = self.config.get("return_count", 1)
@@ -55,7 +55,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.0.3",
+            "version": "1.0.4",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
@@ -303,10 +303,11 @@ class PixivSearchPlugin(Star):
     @command("pixiv_help")
     async def pixiv_help(self, event: AstrMessageEvent):
         """生成并返回帮助信息"""
+
         help_text = """# Pixiv 搜索插件使用帮助
 
 ## 基本命令
-- `/pixiv <标签1>,<标签2>,...` - 搜索含有指定标签的插画
+- `/pixiv <标签1>,<标签2>,...` - 搜索含有任意指定标签的插画 (OR 搜索)
 - `/pixiv_help` - 显示此帮助信息
 
 ## 高级命令
@@ -314,21 +315,23 @@ class PixivSearchPlugin(Star):
 - `/pixiv_user_search <用户名>` - 搜索Pixiv用户
 - `/pixiv_user_detail <用户ID>` - 获取指定用户的详细信息
 - `/pixiv_user_illusts <用户ID>` - 获取指定用户的作品
-- `/pixiv_novel <标签1>,<标签2>,...` - 搜索小说
+- `/pixiv_novel <标签1>,<标签2>,...` - 搜索小说 (OR 搜索)
 - `/pixiv_ranking [mode] [date]` - 获取排行榜作品
 - `/pixiv_related <作品ID>` - 获取与指定作品相关的其他作品
 - `/pixiv_trending_tags` - 获取当前的插画趋势标签
-- `/pixiv_toggle_ai [on|off|only]` - 设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
-- `/pixiv_deepsearch <标签1>,<标签2>,...` - 深度搜索插画（跨多页）
+- `/pixiv_toggle_ai [on|off|only]` - 临时设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
+- `/pixiv_deepsearch <标签1>,<标签2>,...` - 深度搜索插画 (OR 搜索，跨多页)
+- `/pixiv_and <标签1>.<标签2>...` - 深度搜索同时包含所有指定标签的插画 (AND 搜索，跨多页，用 . 分隔标签)
 
+## 配置信息
 - 当前 R18 模式: {r18_mode}
 - 当前返回数量: {return_count}
 - 当前 AI 作品模式: {ai_filter_mode}
-- 深度搜索翻页深度: {deep_search_depth}
+- 深度搜索翻页深度: {deep_search_depth} (-1 表示不限制)
 
 ## 注意事项
-- 标签可以使用中文、英文或日文
-- 多个标签使用英文逗号(,)分隔
+- OR 搜索 (如 /pixiv, /pixiv_deepsearch) 使用英文逗号(,)分隔标签
+- AND 搜索 (/pixiv_and) 使用英文句点(.)分隔标签
 - 获取用户作品或相关作品时，ID必须为数字
 - 日期必须采用 YYYY-MM-DD 格式
 - 使用 `/命令` 或 `/命令 help` 可获取每个命令的详细说明
@@ -1391,6 +1394,195 @@ class PixivSearchPlugin(Star):
         except Exception as e:
             logger.error(f"Pixiv 插件：深度搜索时发生错误 - {e}")
             yield event.plain_result(f"深度搜索时发生错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    @command("pixiv_and")
+    async def pixiv_and_search(self, event: AstrMessageEvent, tags: str):
+        """
+        深度搜索同时包含所有指定标签的 Pixiv 插画 (AND 搜索)。
+        先用第一个标签深度搜索，再本地过滤其他标签。
+        用法: /pixiv_and <标签1>,<标签2>,<标签3>...
+        注意: 标签之间用英文逗号(,)分隔。翻页深度由配置控制。
+        """
+        # 验证用户输入
+        if not tags or tags.strip().lower() == "help":
+            yield event.plain_result(
+                "用法: /pixiv_and <标签1>,<标签2>,<标签3>...\n"
+                "深度搜索同时包含所有指定标签的 Pixiv 插画 (AND 搜索)。\n"
+                "标签之间用英文逗号(,)分隔。\n"
+                f"当前翻页深度设置: {self.config.get('deep_search_depth', 3)} 页 (-1 表示获取所有页面)"
+            )
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+
+        # 获取翻页深度配置
+        deepth = self.config.get("deep_search_depth", 3)
+
+        # 处理标签：使用 , 分隔，并分离第一个标签和其他标签
+        tag_list_input = [tag.strip() for tag in tags.split(",") if tag.strip()] 
+        if not tag_list_input:
+            yield event.plain_result("请提供至少一个有效的标签。")
+            return
+
+        first_tag = tag_list_input[0]
+        other_tags = tag_list_input[1:]
+        all_required_tags_lower = {tag.lower() for tag in tag_list_input} # 用于本地过滤，转小写
+
+        # 构建用于显示/日志的标签字符串 (, 分隔)
+        display_tag_str = ",".join(tag_list_input) 
+
+        logger.info(f"Pixiv 插件：正在进行 AND 深度搜索。策略：先用标签 '{first_tag}' 深度搜索 (翻页深度: {deepth})，然后本地过滤要求同时包含: {display_tag_str}")
+
+        # 搜索前发送提示消息
+        search_phase_msg = f"正在深度搜索与标签「{first_tag}」相关的作品"
+        filter_phase_msg = f"稍后将筛选出同时包含「{display_tag_str}」所有标签的结果。"
+        page_limit_msg = f"将获取 {deepth} 页结果" if deepth != -1 else "将获取所有页面的结果"
+        yield event.plain_result(f"{search_phase_msg}，{filter_phase_msg} {page_limit_msg}，这可能需要一些时间...")
+
+        try:
+            all_illusts_from_first_tag = []
+            page_count = 0
+            next_params = {} # 初始为空，用于存储下一页的参数
+
+            # --- 循环获取页面，仅基于第一个标签 ---
+            while deepth == -1 or page_count < deepth:
+                current_page_num = page_count + 1
+                try:
+                    if page_count == 0:
+                        # 第一次搜索: 传入标签和搜索目标
+                        logger.debug(f"Pixiv API Call (Page 1): search_illust(word='{first_tag}', search_target='partial_match_for_tags')")
+                        json_result = self.client.search_illust(first_tag, search_target="partial_match_for_tags")
+                    else:
+                        # 后续翻页: 使用从 next_url 解析出的参数再次调用 search_illust
+                        if not next_params:
+                            logger.warning(f"Pixiv 插件：尝试为 '{first_tag}' 翻页至第 {current_page_num} 页，但 next_params 为空，中止翻页。")
+                            break
+                        logger.debug(f"Pixiv API Call (Page {current_page_num}): search_illust(**{next_params})")
+                        # 直接将解析出的参数传递给 search_illust
+                        # 它应该包含 'word' 和 'offset' 等必要信息
+                        json_result = self.client.search_illust(**next_params)
+
+                    # 检查 API 返回结果是否有错误字段
+                    if hasattr(json_result, 'error') and json_result.error:
+                        logger.error(f"Pixiv API 返回错误 (页码 {current_page_num}): {json_result.error}")
+                        yield event.plain_result(f"搜索 '{first_tag}' 的第 {current_page_num} 页时 API 返回错误: {json_result.error.get('message', '未知错误')}")
+                        break
+
+                    # 处理有效结果
+                    if json_result.illusts:
+                        logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 第 {current_page_num} 页找到 {len(json_result.illusts)} 个插画。")
+                        all_illusts_from_first_tag.extend(json_result.illusts)
+                    else:
+                        logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 第 {current_page_num} 页没有找到插画。")
+                        # 如果当前页为空，但仍有 next_url，理论上应该继续，但 pixiv API 有时即使没结果也返回 next_url
+                        # 因此，如果当前页为空，且 next_url 存在，我们还是尝试下一页，但如果下一页也失败，循环会因 API 错误或无 next_url 而终止
+
+                    # 获取下一页参数
+                    if hasattr(json_result, 'next_url') and json_result.next_url:
+                        next_params = self.client.parse_qs(json_result.next_url)
+                        page_count += 1
+                    else:
+                        logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 在第 {current_page_num} 页后没有获取到下一页链接或达到深度限制，API 搜索结束。")
+                        break # 没有下一页了，结束循环
+
+                except Exception as api_e:
+                    # 捕获更具体的 API 调用异常或属性访问异常
+                    logger.error(f"Pixiv 插件：调用 search_illust API 时出错 (基于 '{first_tag}', 页码 {current_page_num}) - {type(api_e).__name__}: {api_e}")
+                    yield event.plain_result(f"搜索 '{first_tag}' 的第 {current_page_num} 页时遇到 API 错误，搜索中止。")
+                    import traceback
+                    logger.error(traceback.format_exc()) # 记录详细堆栈
+                    break # API 出错，结束循环
+
+                await asyncio.sleep(0.5) # 避免请求过快
+
+            logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 完成，共获取 {len(all_illusts_from_first_tag)} 个插画，现在开始本地 AND 过滤...")
+
+            # --- 本地 AND 过滤 ---
+            and_filtered_illusts = []
+            if all_illusts_from_first_tag: # 仅在获取到结果时执行过滤
+                required_other_tags_lower = {tag.lower() for tag in other_tags}
+                for illust in all_illusts_from_first_tag:
+                    illust_tags_lower = {tag.name.lower() for tag in illust.tags}
+                    # 检查是否包含所有其他必需标签 (第一个标签已通过 API 搜索保证存在)
+                    if required_other_tags_lower.issubset(illust_tags_lower):
+                        and_filtered_illusts.append(illust)
+
+            initial_count = len(and_filtered_illusts) # AND 过滤后的数量
+            logger.info(f"Pixiv 插件：本地 AND 过滤完成，找到 {initial_count} 个同时包含「{display_tag_str}」所有标签的作品。")
+
+            # --- R18 和 AI 过滤 ---
+            final_filtered_illusts = self._filter_illusts(and_filtered_illusts) # 使用正确的 _filter_illusts
+            filtered_count = len(final_filtered_illusts)
+
+            # 发送过滤信息 (比较 AND 过滤后 和 R18/AI 过滤后的数量)
+            if filtered_count < initial_count:
+                filter_reasons = []
+                if self.r18_mode == "过滤 R18" or self.r18_mode == "仅 R18": filter_reasons.append("R18")
+                if self.ai_filter_mode == "过滤 AI 作品" or self.ai_filter_mode == "仅 AI 作品": filter_reasons.append("AI")
+                if filter_reasons:
+                     filter_msg = f"部分作品因 R18/AI 设置被过滤 (找到 {initial_count} 个符合所有标签的作品，最终剩 {filtered_count} 个可发送)。"
+                     yield event.plain_result(filter_msg)
+            elif initial_count > 0: # 只有在 AND 过滤后有结果时才发送此消息
+                 # 如果没有被 R18/AI 过滤，也给个最终数量提示
+                 yield event.plain_result(f"筛选完成，共找到 {initial_count} 个符合所有标签「{display_tag_str}」的作品。正在发送最多 {self.return_count} 张...")
+            # else: initial_count is 0, no need to send this message
+
+            # 发送结果
+            if not final_filtered_illusts: # 检查最终过滤后的列表
+                 # 根据过滤模式给出更具体的提示
+                 no_result_reason = []
+                 if self.r18_mode == "过滤 R18" and any(self._is_r18(i) for i in and_filtered_illusts):
+                     no_result_reason.append("R18 内容")
+                 if self.ai_filter_mode == "过滤 AI 作品" and any(self._is_ai(i) for i in and_filtered_illusts):
+                     no_result_reason.append("AI 作品")
+                 if self.r18_mode == "仅 R18" and not any(self._is_r18(i) for i in and_filtered_illusts):
+                      no_result_reason.append("非 R18 内容")
+                 if self.ai_filter_mode == "仅 AI 作品" and not any(self._is_ai(i) for i in and_filtered_illusts):
+                      no_result_reason.append("非 AI 作品")
+
+                 if no_result_reason and initial_count > 0:
+                      yield event.plain_result(f"所有找到的作品均为 {' 或 '.join(no_result_reason)}，根据当前设置已被过滤。")
+                 elif initial_count == 0 and len(all_illusts_from_first_tag) > 0: # 如果第一阶段有结果，但 AND 过滤后为 0
+                      yield event.plain_result(f"找到了与「{first_tag}」相关的作品，但没有作品同时包含所有标签「{display_tag_str}」。")
+                 elif initial_count == 0 and len(all_illusts_from_first_tag) == 0: # 如果第一阶段就没结果
+                      yield event.plain_result(f"未找到任何与标签「{first_tag}」相关的作品。")
+                 else: # 如果 initial_count > 0 但过滤后为 0，且原因不明
+                      logger.warning("AND 深度搜索后没有符合条件的插画可供发送，但过滤原因不明确。")
+                      yield event.plain_result("筛选后没有符合条件的作品可发送。")
+                 return # 没有可发送的内容
+
+            # 限制返回数量
+            count_to_send = min(filtered_count, self.return_count)
+            selected_illusts = random.sample(final_filtered_illusts, count_to_send)
+
+            for illust in selected_illusts:
+                # 优化标签格式
+                tags_str = self._format_tags(illust.tags)
+                detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+                image_url = illust.image_urls.large if hasattr(illust.image_urls, 'large') else illust.image_urls.medium
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
+                                yield event.plain_result(f"图片下载失败，仅发送信息：\n{detail_message}")
+                except Exception as img_e:
+                    logger.error(f"Pixiv 插件：下载或处理图片时发生错误 - {img_e}, URL: {image_url}")
+                    yield event.plain_result(f"图片处理失败，仅发送信息：\n{detail_message}")
+                await asyncio.sleep(0.5)
+
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：AND 深度搜索时发生未预料的错误 - {e}") 
+            yield event.plain_result(f"AND 深度搜索时发生错误: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
 
