@@ -22,7 +22,7 @@ except ImportError:
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.0.4",
+    "1.0.5",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -55,7 +55,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.0.4",
+            "version": "1.0.5",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
@@ -180,11 +180,18 @@ class PixivSearchPlugin(Star):
         return filtered_list
 
     @command("pixiv")
-    async def pixiv(self, event: AstrMessageEvent, tags: str):
+    async def pixiv(self, event: AstrMessageEvent, tags: str = ""):
         """处理 /pixiv 命令，默认为标签搜索功能"""
-        # 帮助信息处理
-        if tags.strip().lower() == "help":
+        # 清理标签字符串，并检查是否为空或为 "help"
+        cleaned_tags = tags.strip()
+
+        if cleaned_tags.lower() == "help":
             yield self.pixiv_help(event)
+            return
+
+        if not cleaned_tags: 
+            logger.info("Pixiv 插件：用户未提供搜索标签或标签为空，返回帮助信息。")
+            yield event.plain_result("请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。")
             return
 
         # 验证是否已认证
@@ -193,10 +200,10 @@ class PixivSearchPlugin(Star):
             return
 
         # 标签搜索处理
-        logger.info(f"Pixiv 插件：正在搜索标签 - {tags}")
+        logger.info(f"Pixiv 插件：正在搜索标签 - {cleaned_tags}") # 使用清理后的标签
         try:
             # 调用 Pixiv API 搜索插画
-            search_result = self.client.search_illust(tags, search_target="partial_match_for_tags")
+            search_result = self.client.search_illust(cleaned_tags, search_target="partial_match_for_tags") # 使用清理后的标签
             initial_illusts = search_result.illusts if search_result.illusts else []
             initial_count = len(initial_illusts)
 
@@ -321,7 +328,7 @@ class PixivSearchPlugin(Star):
 - `/pixiv_trending_tags` - 获取当前的插画趋势标签
 - `/pixiv_toggle_ai [on|off|only]` - 临时设置 AI 作品过滤模式 (on:显示, off:过滤, only:仅AI)
 - `/pixiv_deepsearch <标签1>,<标签2>,...` - 深度搜索插画 (OR 搜索，跨多页)
-- `/pixiv_and <标签1>.<标签2>...` - 深度搜索同时包含所有指定标签的插画 (AND 搜索，跨多页，用 . 分隔标签)
+- `/pixiv_and <标签1>,<标签2>,...` - 深度搜索同时包含所有指定标签的插画 (AND 搜索，跨多页)
 
 ## 配置信息
 - 当前 R18 模式: {r18_mode}
@@ -331,7 +338,7 @@ class PixivSearchPlugin(Star):
 
 ## 注意事项
 - OR 搜索 (如 /pixiv, /pixiv_deepsearch) 使用英文逗号(,)分隔标签
-- AND 搜索 (/pixiv_and) 使用英文句点(.)分隔标签
+- AND 搜索 (/pixiv_and) 使用英文逗号(,)分隔标签
 - 获取用户作品或相关作品时，ID必须为数字
 - 日期必须采用 YYYY-MM-DD 格式
 - 使用 `/命令` 或 `/命令 help` 可获取每个命令的详细说明
@@ -1398,21 +1405,20 @@ class PixivSearchPlugin(Star):
             logger.error(traceback.format_exc())
 
     @command("pixiv_and")
-    async def pixiv_and_search(self, event: AstrMessageEvent, tags: str):
-        """
-        深度搜索同时包含所有指定标签的 Pixiv 插画 (AND 搜索)。
-        先用第一个标签深度搜索，再本地过滤其他标签。
-        用法: /pixiv_and <标签1>,<标签2>,<标签3>...
-        注意: 标签之间用英文逗号(,)分隔。翻页深度由配置控制。
-        """
-        # 验证用户输入
-        if not tags or tags.strip().lower() == "help":
-            yield event.plain_result(
-                "用法: /pixiv_and <标签1>,<标签2>,<标签3>...\n"
-                "深度搜索同时包含所有指定标签的 Pixiv 插画 (AND 搜索)。\n"
-                "标签之间用英文逗号(,)分隔。\n"
-                f"当前翻页深度设置: {self.config.get('deep_search_depth', 3)} 页 (-1 表示获取所有页面)"
-            )
+    async def pixiv_and_search(self, event: AstrMessageEvent, tags: str = ""):
+        """处理 /pixiv_and 命令，进行 AND 逻辑深度搜索"""
+        # 清理标签字符串
+        cleaned_tags = tags.strip()
+
+        if not cleaned_tags:
+            logger.info("Pixiv 插件 (AND)：用户未提供搜索标签或标签为空，返回帮助信息。")
+            yield event.plain_result("请输入要进行 AND 搜索的标签 (用逗号分隔)。使用 `/pixiv_help` 查看帮助。")
+            return
+
+        # 分割标签
+        tag_list = [tag.strip() for tag in cleaned_tags.split(',') if tag.strip()]
+        if len(tag_list) < 2:
+            yield event.plain_result("AND 搜索至少需要两个标签，请用英文逗号 `,` 分隔。")
             return
 
         # 验证是否已认证
@@ -1424,7 +1430,7 @@ class PixivSearchPlugin(Star):
         deepth = self.config.get("deep_search_depth", 3)
 
         # 处理标签：使用 , 分隔，并分离第一个标签和其他标签
-        tag_list_input = [tag.strip() for tag in tags.split(",") if tag.strip()] 
+        tag_list_input = [tag.strip() for tag in cleaned_tags.split(",") if tag.strip()] 
         if not tag_list_input:
             yield event.plain_result("请提供至少一个有效的标签。")
             return
@@ -1449,7 +1455,6 @@ class PixivSearchPlugin(Star):
             page_count = 0
             next_params = {} # 初始为空，用于存储下一页的参数
 
-            # --- 循环获取页面，仅基于第一个标签 ---
             while deepth == -1 or page_count < deepth:
                 current_page_num = page_count + 1
                 try:
@@ -1463,8 +1468,6 @@ class PixivSearchPlugin(Star):
                             logger.warning(f"Pixiv 插件：尝试为 '{first_tag}' 翻页至第 {current_page_num} 页，但 next_params 为空，中止翻页。")
                             break
                         logger.debug(f"Pixiv API Call (Page {current_page_num}): search_illust(**{next_params})")
-                        # 直接将解析出的参数传递给 search_illust
-                        # 它应该包含 'word' 和 'offset' 等必要信息
                         json_result = self.client.search_illust(**next_params)
 
                     # 检查 API 返回结果是否有错误字段
@@ -1479,8 +1482,6 @@ class PixivSearchPlugin(Star):
                         all_illusts_from_first_tag.extend(json_result.illusts)
                     else:
                         logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 第 {current_page_num} 页没有找到插画。")
-                        # 如果当前页为空，但仍有 next_url，理论上应该继续，但 pixiv API 有时即使没结果也返回 next_url
-                        # 因此，如果当前页为空，且 next_url 存在，我们还是尝试下一页，但如果下一页也失败，循环会因 API 错误或无 next_url 而终止
 
                     # 获取下一页参数
                     if hasattr(json_result, 'next_url') and json_result.next_url:
@@ -1488,7 +1489,7 @@ class PixivSearchPlugin(Star):
                         page_count += 1
                     else:
                         logger.info(f"Pixiv 插件：AND 搜索 (阶段1: '{first_tag}') 在第 {current_page_num} 页后没有获取到下一页链接或达到深度限制，API 搜索结束。")
-                        break # 没有下一页了，结束循环
+                        break 
 
                 except Exception as api_e:
                     # 捕获更具体的 API 调用异常或属性访问异常
@@ -1530,7 +1531,6 @@ class PixivSearchPlugin(Star):
             elif initial_count > 0: # 只有在 AND 过滤后有结果时才发送此消息
                  # 如果没有被 R18/AI 过滤，也给个最终数量提示
                  yield event.plain_result(f"筛选完成，共找到 {initial_count} 个符合所有标签「{display_tag_str}」的作品。正在发送最多 {self.return_count} 张...")
-            # else: initial_count is 0, no need to send this message
 
             # 发送结果
             if not final_filtered_illusts: # 检查最终过滤后的列表
