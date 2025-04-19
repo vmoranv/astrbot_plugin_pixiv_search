@@ -191,7 +191,7 @@ class PixivSearchPlugin(Star):
 
         if not cleaned_tags: 
             logger.info("Pixiv 插件：用户未提供搜索标签或标签为空，返回帮助信息。")
-            yield event.plain_result("请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。")
+            yield event.plain_result("请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。")
             return
 
         # 验证是否已认证
@@ -341,7 +341,10 @@ class PixivSearchPlugin(Star):
 - AND 搜索 (/pixiv_and) 使用英文逗号(,)分隔标签
 - 获取用户作品或相关作品时，ID必须为数字
 - 日期必须采用 YYYY-MM-DD 格式
+- 带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy)
+- 填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。
 - 使用 `/命令` 或 `/命令 help` 可获取每个命令的详细说明
+- 仔细看[README.md](https://github.com/vmoranv/astrbot_plugin_pixiv_search/blob/master/README.md)
     """.format(
             r18_mode=self.r18_mode,
             return_count=self.return_count,
