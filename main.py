@@ -1612,7 +1612,8 @@ class PixivSearchPlugin(Star):
             logger.info(f"Pixiv 插件：正在获取作品详情 - ID: {illust_id}")
             illust_detail = self.client.illust_detail(illust_id)
 
-            if not illust_detail or not hasattr(illust_detail, 'illust'):
+            # 检查 illust_detail 和 illust 是否存在
+            if not illust_detail or not hasattr(illust_detail, 'illust') or not illust_detail.illust:
                 yield event.plain_result("未找到该作品，请检查作品 ID 是否正确。")
                 return
 
