@@ -22,7 +22,7 @@ except ImportError:
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -55,7 +55,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.1.0",
+            "version": "1.1.1",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
@@ -117,7 +117,7 @@ class PixivSearchPlugin(Star):
     def _is_ai(self, illust: Any) -> bool:
         """检查插画是否包含 AI 相关标签"""
         # 包含常见的 AI 标签及其变体 (忽略大小写)
-        ai_tags_lower = {"ai", "ai-generated", "aiイラスト", "aigenerated", "ai generated"}
+        ai_tags_lower = {"ai", "ai-generated", "AI-Generated", "aiイラスト", "aigenerated", "ai generated"}
         tags_list = self._get_safe_tags(illust)
         tags_lower_set = {tag.lower() for tag in tags_list}
         return any(tag in ai_tags_lower for tag in tags_lower_set)
@@ -319,6 +319,7 @@ class PixivSearchPlugin(Star):
 
 ## 高级命令
 - `/pixiv_recommended` - 获取推荐作品
+- `/pixiv_specific <作品ID>` - 获取指定作品详情
 - `/pixiv_user_search <用户名>` - 搜索Pixiv用户
 - `/pixiv_user_detail <用户ID>` - 获取指定用户的详细信息
 - `/pixiv_user_illusts <用户ID>` - 获取指定用户的作品
@@ -1585,6 +1586,74 @@ class PixivSearchPlugin(Star):
         except Exception as e:
             logger.error(f"Pixiv 插件：AND 深度搜索时发生未预料的错误 - {e}") 
             yield event.plain_result(f"AND 深度搜索时发生错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    @command("pixiv_specific")
+    async def pixiv_specific(self, event: AstrMessageEvent, illust_id: str = ""):
+        """根据作品 ID 获取特定作品详情"""
+        # 检查是否提供了作品 ID
+        if not illust_id:
+            yield event.plain_result("请输入要查询的作品 ID。使用 `/pixiv_help` 查看帮助。")
+            return
+
+        # 验证作品 ID 是否为数字
+        if not illust_id.isdigit():
+            yield event.plain_result("作品 ID 必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            return
+
+        # 调用 Pixiv API 获取作品详情
+        try:
+            logger.info(f"Pixiv 插件：正在获取作品详情 - ID: {illust_id}")
+            illust_detail = self.client.illust_detail(illust_id)
+
+            if not illust_detail or not hasattr(illust_detail, 'illust'):
+                yield event.plain_result("未找到该作品，请检查作品 ID 是否正确。")
+                return
+
+            illust = illust_detail.illust
+
+            # 根据 R18 模式过滤作品
+            is_r18 = self._is_r18(illust)
+            if self.r18_mode == "过滤 R18" and is_r18:
+                yield event.plain_result("该作品为 R18 内容，根据当前设置已被过滤。")
+                return
+            if self.r18_mode == "仅 R18" and not is_r18:
+                yield event.plain_result("该作品为非 R18 内容，根据当前设置已被过滤。")
+                return
+
+            # 根据 AI 模式过滤作品
+            is_ai = self._is_ai(illust)
+            if self.ai_filter_mode == "过滤 AI 作品" and is_ai:
+                yield event.plain_result("该作品为 AI 生成内容，根据当前设置已被过滤。")
+                return
+            if self.ai_filter_mode == "仅 AI 作品" and not is_ai:
+                yield event.plain_result("该作品为非 AI 生成内容，根据当前设置已被过滤。")
+                return
+
+            # 构建详情信息
+            tags_str = self._format_tags(illust.tags)
+            detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
+
+            # 尝试下载并发送图片
+            image_url = illust.image_urls.large if hasattr(illust.image_urls, 'large') else illust.image_urls.medium
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}) as response:
+                    if response.status == 200:
+                        img_data = await response.read()
+                        yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                    else:
+                        logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
+                        yield event.plain_result(f"图片下载失败，仅发送信息：\n{detail_message}")
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取作品详情时发生错误 - {e}")
+            yield event.plain_result(f"获取作品详情时发生错误: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
 

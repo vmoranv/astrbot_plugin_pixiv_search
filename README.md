@@ -28,6 +28,7 @@
 * **AI 作品显示**: 可配置是否显示 AI 生成的作品。
 * **深度搜索**: 使用 `/pixiv_deep_search <标签1>,<标签2>,...` 命令进行深度搜索，返回更多相关作品。
 * **与搜索**: 使用 `/pixiv_and <标签1>,<标签2>,...` 命令进行与搜索，返回同时包含所有指定标签的作品。
+* **指定作品详情**: 使用 `/pixiv_specific <作品ID>` 命令获取指定作品详情。
 
 ## 🚀 开始使用
 
@@ -103,6 +104,7 @@
 ```bash
 /pixiv_recommended  # 获取推荐作品
 /pixiv_user_search <用户名>  # 搜索Pixiv用户
+/pixiv_specific <作品ID>  # 获取指定作品详情
 /pixiv_user_detail <用户ID>  # 获取指定用户的详细信息
 /pixiv_user_illusts <用户ID>  # 获取指定用户的作品
 /pixiv_novel <标签1>,<标签2>,...  # 搜索小说
