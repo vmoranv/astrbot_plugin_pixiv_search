@@ -1,22 +1,15 @@
 import asyncio
 import random
-from pathlib import Path
-from typing import Optional, List, Dict, Any 
+from typing import List, Dict, Any 
 import aiohttp 
 
-# AstrBot 核心库导入
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger  
 import astrbot.api.message_components as Comp
 from astrbot.api.all import command  
+from pixivpy3 import AppPixivAPI
 
-# 尝试导入 pixivpy 库
-try:
-    from pixivpy3 import AppPixivAPI
-except ImportError:
-    logger.error("Pixiv 插件依赖库 'pixivpy' 未安装。请确保 requirements.txt 文件存在且内容正确，然后重载插件或重启 AstrBot。")
-    raise ImportError("pixivpy not found, please install it.")
 
 @register(
     "pixiv_search",
@@ -43,10 +36,15 @@ class PixivSearchPlugin(Star):
         self.refresh_token = self.config.get("refresh_token", None)
         self.return_count = self.config.get("return_count", 1)
         self.r18_mode = self.config.get("r18_mode", "过滤 R18")
-        self.ai_filter_mode = self.config.get("ai_filter_mode", "显示 AI 作品") # 新增读取 AI 过滤模式
+        self.ai_filter_mode = self.config.get("ai_filter_mode", "显示 AI 作品")
+        self.show_details = self.config.get("show_details", True)  # 修改：使用 show_details
         
-        # 记录初始化信息，包含 AI 过滤模式
-        logger.info(f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, return_count={self.return_count}, r18_mode='{self.r18_mode}', ai_filter_mode='{self.ai_filter_mode}'")
+        # 记录初始化信息，包含 AI 过滤模式和详细信息设置
+        logger.info(
+            f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, "
+            f"return_count={self.return_count}, r18_mode='{self.r18_mode}', "
+            f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}" # 修改：使用 show_details
+        )
         
     @staticmethod
     def info() -> Dict[str, Any]:
@@ -261,7 +259,10 @@ class PixivSearchPlugin(Star):
                             if response.status == 200:
                                 img_data = await response.read()
                                 # 发送图片和文字
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
                                 # 如果下载失败，只发送文字信息
@@ -336,6 +337,7 @@ class PixivSearchPlugin(Star):
 - 当前返回数量: {return_count}
 - 当前 AI 作品模式: {ai_filter_mode}
 - 深度搜索翻页深度: {deep_search_depth} (-1 表示不限制)
+- 是否显示详细信息: {show_details}
 
 ## 注意事项
 - OR 搜索 (如 /pixiv, /pixiv_deepsearch) 使用英文逗号(,)分隔标签
@@ -350,7 +352,8 @@ class PixivSearchPlugin(Star):
             r18_mode=self.r18_mode,
             return_count=self.return_count,
             ai_filter_mode=self.ai_filter_mode,
-            deep_search_depth=self.config.get("deep_search_depth", 3)
+            deep_search_depth=self.config.get("deep_search_depth", 3),
+            show_details=self.show_details
         )
 
         yield event.plain_result(help_text)
@@ -437,7 +440,10 @@ class PixivSearchPlugin(Star):
                                 tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
                                 
                                 detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
                                 yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
@@ -508,7 +514,10 @@ class PixivSearchPlugin(Star):
                                             tags_str += f"{tag}, "
                                 tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
                                 detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
                                 yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
@@ -674,7 +683,10 @@ class PixivSearchPlugin(Star):
                     async with session.get(image_url, headers=headers) as response:
                         if response.status == 200:
                             img_data = await response.read()
-                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            if self.show_details:
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                            else:
+                                yield event.chain_result([Comp.Image.fromBytes(img_data)])
                         else:
                             yield event.plain_result(f"下载图片失败 - 状态码: {response.status}\n{detail_message}")
 
@@ -788,7 +800,10 @@ class PixivSearchPlugin(Star):
                                             tags_str += f"{tag}, "
                                 tags_str = tags_str.rstrip(", ")  # 移除最后的逗号和空格
                                 detail_message = f"作品标题: {illust.title}\n作者: {illust.user.name}\n标签: {tags_str}\n链接: https://www.pixiv.net/artworks/{illust.id}"
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}")
                                 yield event.plain_result(f"下载图片失败 - 状态码: {response.status}")
@@ -868,7 +883,10 @@ class PixivSearchPlugin(Star):
                     async with session.get(image_url, headers=headers) as response:
                         if response.status == 200:
                             img_data = await response.read()
-                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(user_info)])
+                            if self.show_details:
+                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(user_info)])
+                            else:
+                                yield event.chain_result([Comp.Image.fromBytes(img_data)])
                         else:
                             # 如果无法下载图片，只返回文本信息
                             yield event.plain_result(f"{user_info}\n\n[注意] 无法下载预览图片，状态码: {response.status}")
@@ -1062,7 +1080,10 @@ class PixivSearchPlugin(Star):
                             if response.status == 200:
                                 img_data = await response.read()
                                 # 发送图片和文字
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
                                 # 如果下载失败，只发送文字信息
@@ -1389,7 +1410,10 @@ class PixivSearchPlugin(Star):
                             if response.status == 200:
                                 img_data = await response.read()
                                 # 发送图片和文字
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
                                 # 如果下载失败，只发送文字信息
@@ -1573,7 +1597,10 @@ class PixivSearchPlugin(Star):
                         async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}) as response:
                             if response.status == 200:
                                 img_data = await response.read()
-                                yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                if self.show_details:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                                else:
+                                    yield event.chain_result([Comp.Image.fromBytes(img_data)])
                             else:
                                 logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
                                 yield event.plain_result(f"图片下载失败，仅发送信息：\n{detail_message}")
@@ -1647,7 +1674,11 @@ class PixivSearchPlugin(Star):
                 async with session.get(image_url, headers={'Referer': 'https://app-api.pixiv.net/'}) as response:
                     if response.status == 200:
                         img_data = await response.read()
-                        yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                        # 新增：根据 show_details 判断是否发送详情
+                        if self.show_details:
+                            yield event.chain_result([Comp.Image.fromBytes(img_data), Comp.Plain(detail_message)])
+                        else:
+                            yield event.chain_result([Comp.Image.fromBytes(img_data)])
                     else:
                         logger.error(f"Pixiv 插件：下载图片失败 - 状态码: {response.status}, URL: {image_url}")
                         yield event.plain_result(f"图片下载失败，仅发送信息：\n{detail_message}")

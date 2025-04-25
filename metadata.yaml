@@ -36,6 +36,11 @@ config_schema:
     required: true
     default: true
     description: "是否显示 AI 生成的作品"
+  show_details:
+    type: bool
+    required: true
+    default: true
+    description: "是否显示详细信息"
   deep_search_depth:
     type: int
     required: true

@@ -37,6 +37,12 @@
           "仅 AI 作品"
       ]
   },
+  "show_details": {
+      "description": "是否在发送图片时附带详细信息",
+      "type": "bool",
+      "hint": "设置为 false 时，仅发送图片，不附带文字详情。",
+      "default": true
+  },
   "deep_search_depth": {
       "description": "深度搜索翻页深度",
       "type": "int",
