@@ -69,5 +69,13 @@
     "type": "bool",
     "hint": "转发图片是否走文件转发,默认为true,如果图片过大,可能会导致内存不足,请设置为false",
     "default": true
+  },
+  "refresh_token_interval_minutes": {
+      "description": "自动刷新 Refresh Token 的间隔时间（分钟）",
+      "type": "int",
+      "hint": "为防止 Refresh Token 因长期未使用而失效，插件会定期尝试使用它进行认证。单位为分钟，设置为 0 或负数则禁用自动刷新。",
+      "default": 180,
+      "min": 0,
+      "max": 10080
   }
 } 

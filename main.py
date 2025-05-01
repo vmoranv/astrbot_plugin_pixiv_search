@@ -11,7 +11,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger  
 from astrbot.api.message_components import Image, Plain, Node, Nodes
 from astrbot.api.all import command  
-from pixivpy3 import AppPixivAPI
+from pixivpy3 import AppPixivAPI, PixivError
 
 from .config import TEMP_DIR, clean_temp_dir
 from .tag import build_detail_message, filter_illusts_with_reason
@@ -20,7 +20,7 @@ from .tag import build_detail_message, filter_illusts_with_reason
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.0",
+    "1.2.1",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
 )
 class PixivSearchPlugin(Star):
@@ -37,7 +37,6 @@ class PixivSearchPlugin(Star):
         super().__init__(context)  
         self.config = config
         self.client = AppPixivAPI()  
-        self.authenticated = False
         self.refresh_token = self.config.get("refresh_token", None)
         self.return_count = self.config.get("return_count", 1)
         self.r18_mode = self.config.get("r18_mode", "过滤 R18")
@@ -47,13 +46,24 @@ class PixivSearchPlugin(Star):
         self.deep_search_depth = self.config.get("deep_search_depth", 3)
         self.forward_threshold = self.config.get("forward_threshold", 5)
         self.is_fromfilesystem = self.config.get("is_fromfilesystem", True)
-        
+        self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720) # 读取刷新间隔
+
+        self._refresh_task: asyncio.Task = None # 初始化任务句柄
+
         # 记录初始化信息，包含 AI 过滤模式和详细信息设置
         logger.info(
             f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, "
             f"return_count={self.return_count}, r18_mode='{self.r18_mode}', "
-            f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}" 
+            f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}, "
+            f"refresh_interval={self.refresh_interval} 分钟" # 添加日志记录
         )
+        
+        # 启动后台刷新任务 (如果间隔大于 0)
+        if self.refresh_interval > 0:
+            self._refresh_task = asyncio.create_task(self._periodic_token_refresh())
+            logger.info(f"Pixiv 插件：已启动 Refresh Token 自动刷新任务，间隔 {self.refresh_interval} 分钟。")
+        else:
+             logger.info("Pixiv 插件：Refresh Token 自动刷新已禁用 (间隔 <= 0)。")
         
     def filter_items(self, items, tag_label):
         """
@@ -69,7 +79,7 @@ class PixivSearchPlugin(Star):
             logger=logger,
             show_filter_result=self.show_filter_result
         )
-
+        
     @staticmethod
     def info() -> Dict[str, Any]:
         """返回插件元数据"""
@@ -77,7 +87,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.0",
+            "version": "1.2.1",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search"
         }
 
@@ -241,9 +251,9 @@ class PixivSearchPlugin(Star):
             illusts_to_send = random.sample(filtered_illusts, count_to_send) if count_to_send > 0 else []
 
             if not illusts_to_send:
-                logger.info("没有符合条件的推荐插画可供发送。")
+                logger.info("没有符合条件的推荐插画可供发送。") 
                 return
-                
+
             threshold = self.config.get("forward_threshold", 5)
             if len(illusts_to_send) > threshold:
                 async for result in self.send_forward_message(event, illusts_to_send, lambda illust: build_detail_message(illust, is_novel=False)):
@@ -846,6 +856,7 @@ class PixivSearchPlugin(Star):
 - show_details: true|false
 - forward_threshold: 1-20
 - is_fromfilesystem: true|false
+- refresh_token_interval_minutes: 0-10080
 
 ## 示例
 - /pixiv_config show
@@ -890,6 +901,11 @@ class PixivSearchPlugin(Star):
             },
             "is_fromfilesystem": {
                 "type": "bool"
+            },
+            "refresh_token_interval_minutes": {
+                "type": "int",
+                "min": 0,
+                "max": 10080
             }
         }
         # 统一提前定义当前配置（全部走 self.config）
@@ -1049,7 +1065,7 @@ class PixivSearchPlugin(Star):
             
             # 检查是否有结果
             if not all_illusts:
-                yield event.plain_result(f"未找到与「{tag_str}」相关的插画。")
+                yield event.plain_result(f"深度搜索未找到与「{tag_str}」相关的插画。") # 稍微修改提示，更明确是深度搜索阶段未找到
                 return
             
             # 记录找到的总数量
@@ -1057,22 +1073,36 @@ class PixivSearchPlugin(Star):
             logger.info(f"Pixiv 插件：深度搜索完成，共找到 {initial_count} 个插画，开始过滤处理...")
             yield event.plain_result(f"搜索完成！共获取 {page_count} 页，找到 {initial_count} 个结果，正在处理...")
             
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
+            # --- R18 和 AI 过滤及所有提示统一处理 ---
             filtered_illusts, filter_msgs = self.filter_items(all_illusts, tag_str)
+
+            # 1. 无论是否有结果，都先发送过滤信息（如果配置了显示）
             if self.show_filter_result:
                 for msg in filter_msgs:
                     yield event.plain_result(msg)
-            if not filtered_illusts:
-                return  # 没有可发送的内容
 
-            # 打乱顺序，随机选择作品
+            # 2. 检查最终过滤后是否还有结果
+            if not filtered_illusts:
+                # 如果没有结果，发送明确的提示信息然后返回
+                logger.info(f"Pixiv 插件 (DeepSearch)：经过 R18/AI 过滤后，没有找到符合条件的作品 (标签: {tag_str})。")
+                yield event.plain_result(f"在深度搜索和过滤后，未找到与「{tag_str}」相关且符合 R18/AI 过滤条件的作品。")
+                return # 明确返回，不再执行后续发送逻辑
+
+            # --- 如果有结果，则继续执行发送逻辑 ---
+            logger.info(f"Pixiv 插件 (DeepSearch)：最终筛选出 {len(filtered_illusts)} 个作品准备发送 (标签: {tag_str})。")
+
+            # 打乱顺序，随机选择作品 (注意：原代码是切片，这里保持一致，如果需要随机抽样请告知)
             random.shuffle(filtered_illusts)
             count_to_send = min(len(filtered_illusts), self.return_count)
+            # 使用切片获取要发送的插画列表
             illusts_to_send = filtered_illusts[:count_to_send]
-            
+
             # 发送结果
             if not illusts_to_send:
-                logger.info("深度搜索后没有符合条件的插画可供发送。")
+                # 这个日志理论上只会在 return_count <= 0 时触发
+                logger.info(f"深度搜索后没有符合条件的插画可供发送 (可能是 return_count 设置为 0)。(标签: {tag_str})")
+                # 不需要 yield 消息，因为上面已经处理了无结果的情况，这里只是日志记录
+                return
 
             threshold = self.config.get("forward_threshold", 5)
             if len(illusts_to_send) > threshold:
@@ -1084,7 +1114,6 @@ class PixivSearchPlugin(Star):
                     async for result in self.send_pixiv_image(event, illust, detail_message, show_details=self.show_details):
                         yield result
 
-
         except Exception as e:
             logger.error(f"Pixiv 插件：深度搜索时发生错误 - {e}")
             yield event.plain_result(f"深度搜索时发生错误: {str(e)}")
@@ -1092,7 +1121,7 @@ class PixivSearchPlugin(Star):
             logger.error(traceback.format_exc())
 
     @command("pixiv_and")
-    async def pixiv_and_search(self, event: AstrMessageEvent, tags: str = ""):
+    async def pixiv_and(self, event: AstrMessageEvent, tags: str = ""):
         """处理 /pixiv_and 命令，进行 AND 逻辑深度搜索"""
         # 清理标签字符串
         cleaned_tags = tags.strip()
@@ -1202,14 +1231,25 @@ class PixivSearchPlugin(Star):
 
             # --- R18 和 AI 过滤及所有提示统一处理 ---
             final_filtered_illusts, filter_msgs = self.filter_items(and_filtered_illusts, display_tag_str)
+
+            # 1. 无论是否有结果，都先发送过滤信息（如果配置了显示）
             if self.show_filter_result:
                 for msg in filter_msgs:
                     yield event.plain_result(msg)
+
+            # 2. 检查最终过滤后是否还有结果
             if not final_filtered_illusts:
-                return # 没有可发送的内容
+                # 如果没有结果，发送明确的提示信息然后返回
+                logger.info(f"Pixiv 插件 (AND)：经过 R18/AI 过滤后，没有找到符合条件的作品 (标签: {display_tag_str})。")
+                yield event.plain_result(f"在深度搜索和过滤后，未找到同时包含「{display_tag_str}」所有标签且符合 R18/AI 过滤条件的作品。")
+                return # 明确返回，不再执行后续发送逻辑
+
+            # --- 如果有结果，则继续执行发送逻辑 ---
+            logger.info(f"Pixiv 插件 (AND)：最终筛选出 {len(final_filtered_illusts)} 个作品准备发送 (标签: {display_tag_str})。")
 
             # 限制返回数量
             count_to_send = min(len(final_filtered_illusts), self.return_count)
+            # 从最终结果中随机抽样
             illusts_to_send = random.sample(final_filtered_illusts, count_to_send)
 
             threshold = self.config.get("forward_threshold", 5)
@@ -1221,7 +1261,6 @@ class PixivSearchPlugin(Star):
                     detail_message = build_detail_message(illust, is_novel=False)
                     async for result in self.send_pixiv_image(event, illust, detail_message, show_details=self.show_details):
                         yield result
-
 
         except Exception as e:
             logger.error(f"Pixiv 插件：AND 深度搜索时发生未预料的错误 - {e}") 
@@ -1278,9 +1317,55 @@ class PixivSearchPlugin(Star):
             import traceback
             logger.error(traceback.format_exc())
 
+    
+    async def _periodic_token_refresh(self):
+        """定期尝试使用 refresh_token 进行认证以保持其活性"""
+        while True:
+            try:
+                # 先等待指定间隔
+                wait_seconds = self.refresh_interval * 60
+                logger.debug(f"Pixiv Token 刷新任务：等待 {self.refresh_interval} 分钟 ({wait_seconds} 秒)...")
+                await asyncio.sleep(wait_seconds)
+
+                # 检查 refresh_token 是否已配置
+                current_refresh_token = self.config.get("refresh_token") # 重新获取以防中途修改
+                if not current_refresh_token:
+                    logger.warning("Pixiv Token 刷新任务：未配置 Refresh Token，跳过本次刷新。")
+                    continue
+
+                logger.info("Pixiv Token 刷新任务：尝试使用 Refresh Token 进行认证...")
+                try:
+                    self.client.auth(refresh_token=current_refresh_token)
+                    logger.info("Pixiv Token 刷新任务：认证调用成功。")
+
+                except PixivError as pe:
+                    logger.error(f"Pixiv Token 刷新任务：认证时发生 Pixiv API 错误 - {pe}")
+                except Exception as e:
+                    logger.error(f"Pixiv Token 刷新任务：认证时发生未知错误 - {type(e).__name__}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+            except asyncio.CancelledError:
+                logger.info("Pixiv Token 刷新任务：任务被取消，停止刷新。")
+                break
+            except Exception as loop_e:
+                logger.error(f"Pixiv Token 刷新任务：循环中发生意外错误 - {loop_e}，将在下次间隔后重试。")
+                import traceback
+                logger.error(traceback.format_exc())
+
     async def terminate(self):
         """插件终止时调用的清理函数"""
+        logger.info("Pixiv 搜索插件正在停用...")
+        # 取消后台刷新任务
+        if self._refresh_task and not self._refresh_task.done():
+            self._refresh_task.cancel()
+            try:
+                # 等待任务实际取消
+                await self._refresh_task
+            except asyncio.CancelledError:
+                logger.info("Pixiv Token 刷新任务已成功取消。")
+            except Exception as e:
+                logger.error(f"等待 Pixiv Token 刷新任务取消时发生错误: {e}")
         logger.info("Pixiv 搜索插件已停用。")
         pass
-
     
