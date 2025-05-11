@@ -7,6 +7,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 # 2. 动态读取图片发送数量
 
+
 def get_return_count():
     conf_path = os.path.join(os.path.dirname(__file__), "_conf_schema.json")
     with open(conf_path, "r", encoding="utf-8") as f:
@@ -16,13 +17,19 @@ def get_return_count():
         return val.get("default", 1)
     return int(val)
 
+
 # 3. 缓存目录清理，保证最多20张图片
 
+
 def clean_temp_dir(max_files=20):
-    files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR) if os.path.isfile(os.path.join(TEMP_DIR, f))]
+    files = [
+        os.path.join(TEMP_DIR, f)
+        for f in os.listdir(TEMP_DIR)
+        if os.path.isfile(os.path.join(TEMP_DIR, f))
+    ]
     if len(files) >= max_files:
         files.sort(key=lambda x: os.path.getctime(x))
-        for f in files[:len(files) - max_files + 1]:
+        for f in files[: len(files) - max_files + 1]:
             try:
                 os.remove(f)
             except Exception as e:
