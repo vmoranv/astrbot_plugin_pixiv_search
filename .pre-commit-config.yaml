@@ -6,5 +6,3 @@ repos:
         # 自动修复 Ruff 发现的问题
         args: [--fix]
       - id: ruff-format 
-        # 自动格式化代码
-        args: [--line-length, 120]
