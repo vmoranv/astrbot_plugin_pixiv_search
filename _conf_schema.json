@@ -52,8 +52,9 @@
       "default": true
   },
   "forward_threshold": {
-      "description": "单次发送图片张数超过该值时自动使用消息转发(特别慢,而且会占用大量内存,base64过长还会被截断,不推荐)",
+      "description": "单次发送图片张数超过该值时自动使用消息转发",
       "type": "int",
+      "hint": "设置为 0 时，不使用消息转发(特别慢,而且会占用大量内存,base64过长还会被截断,不推荐)。",
       "default": 5,
       "min": 1,
       "max": 20
