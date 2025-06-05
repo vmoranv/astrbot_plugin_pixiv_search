@@ -21,7 +21,7 @@ from .tag import build_detail_message, filter_illusts_with_reason
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.1",
+    "1.2.2",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -96,7 +96,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.1",
+            "version": "1.2.2",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
