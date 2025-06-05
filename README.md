@@ -1,139 +1,164 @@
 # AstrBot Pixiv 搜索插件
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vmoranv/astrbot_plugin_pixiv_search)
 [![文档](https://img.shields.io/badge/AstrBot-%E6%96%87%E6%A1%A3-blue)](https://astrbot.app)
 [![aiohttp](https://img.shields.io/pypi/v/aiohttp.svg)](https://pypi.org/project/aiohttp/)
 
 ![:@astrbot_plugin_pixiv_search](https://count.getloli.com/get/@astrbot_plugin_pixiv_search?theme=booru-lewd)
 
-这是一个为 [AstrBot](https://astrbot.app) 开发的插件，允许用户通过 Pixiv 标签搜索插画。
+这是一个为 [AstrBot](https://astrbot.app) 开发的 Pixiv 搜索插件，让你可以在聊天中轻松搜索和获取 Pixiv 插画作品。
 
-## ✨ 功能特性
+## ✨ 核心特性
 
-* **标签搜索**: 使用命令 `/pixiv <标签1>,<标签2>,...` 来搜索相关 Pixiv 插画。
-* **推荐作品**: 使用命令 `/pixiv_recommended` 获取 Pixiv 推荐作品。
-* **用户查询**: 支持搜索用户、获取用户详情和作品列表。
-* **小说搜索**: 使用命令 `/pixiv_novel <标签1>,<标签2>,...` 搜索 Pixiv 小说。
-* **排行榜查询**: 使用命令 `/pixiv_ranking` 获取不同类型的排行榜作品。
-* **相关作品**: 使用命令 `/pixiv_related <作品ID>` 获取与特定作品相关的其他作品。
-* **图片发送**: 直接在聊天中发送搜索到的插画图片。
-* **统一帮助**: 所有命令支持参数缺省或使用 help 参数获取详细使用说明。
-* **优化标签显示**: 标签以易读形式显示，包含原名和翻译名（如有）。
-* **R18 模式**: 可配置是否过滤 R18 内容、仅显示 R18 内容或不过滤。支持以下模式：
-  - **过滤 R18**: 默认模式，自动过滤所有 R18 作品。
-  - **允许 R18**: 不进行过滤，返回所有作品。
-  - **仅 R18**: 仅返回 R18 作品。
-* **数量控制**: 可配置每次搜索返回的图片数量。
-* **安全配置**: 通过 AstrBot 插件配置系统安全管理 Pixiv API 凭据。
-* **趋势标签**: 获取插画趋势标签。
-* **深度搜索**: 使用 `/pixiv_deepsearch <标签1>,<标签2>,...` 命令进行深度搜索，返回更多相关作品。
-* **与搜索**: 使用 `/pixiv_and <标签1>,<标签2>,...` 命令进行与搜索，返回同时包含所有指定标签的作品。
-* **指定作品详情**: 使用 `/pixiv_specific <作品ID>` 命令获取指定作品详情。
-* **是否通过文件转发**: 通过 `is_fromfilesystem` 参数控制是否通过文件转发图片，默认为 `true`。(特别慢,而且会占用大量内存,base64过长还会被截断,不推荐)
-* **是否在发送图片时附带详细信息**: 通过 `show_details` 参数控制是否在发送图片时附带详细信息，默认为 `true`。
-* **是否显示过滤内容提示**: 通过 `show_filter_result` 参数控制是否显示过滤内容提示，默认为 `true`。
-* **自动刷新 Refresh Token**: 通过 `refresh_token_interval_minutes` 参数控制自动刷新 Refresh Token 的间隔时间，默认为 180 分钟 (3 小时)。
+- 🎨 **多种搜索方式**: 支持标签搜索、用户搜索、作品详情查询
+- 📚 **内容多样化**: 插画、小说、排行榜、推荐作品一应俱全  
+- 🔍 **高级搜索**: 深度搜索、与搜索、相关作品推荐
+- 🛡️ **内容控制**: 灵活的 R18 内容过滤配置
+- ⚙️ **高度可配置**: 返回数量、显示详情、AI 作品过滤等
+- 🔐 **安全管理**: 通过 WebUI 安全管理 API 凭据
 
-## 🚀 开始使用
+## 🎯 主要功能
 
-### 前提条件
+### 搜索功能
+- `/pixiv <标签>` - 标签搜索插画
+- `/pixiv_deepsearch <标签>` - 深度搜索更多相关作品
+- `/pixiv_and <标签>` - 与搜索(同时包含所有标签)
+- `/pixiv_user_search <用户名>` - 搜索用户
 
-* Python >= 3.10
-* Git
-* 已成功部署并运行的 AstrBot 实例 (v3.x 或更高版本) - 参考 [源码部署](https://astrbot.app/deploy/astrbot/cli.html) 或 [Docker 部署](https://astrbot.app/deploy/astrbot/docker.html)
-* 一个有效的 Pixiv 账号，并已获取 `refresh_token` (推荐) 。获取 `refresh_token` 方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[Pixiv OAuth](https://gist.github.com/ZipFile/c9ebedb224406f4f11845ab700124362)。
+### 内容获取
+- `/pixiv_recommended` - 获取推荐作品
+- `/pixiv_ranking [模式] [日期]` - 排行榜作品
+- `/pixiv_novel <标签>` - 搜索小说
+- `/pixiv_trending_tags` - 获取趋势标签
 
-### 安装插件
+### 详情查询
+- `/pixiv_specific <作品ID>` - 指定作品详情
+- `/pixiv_user_detail <用户ID>` - 用户详细信息
+- `/pixiv_related <作品ID>` - 相关作品推荐
 
-1. 进入你的 AstrBot 主目录。
-2. 导航到插件目录，并将本插件仓库克隆下来：
-    ```bash
-    # 进入 AstrBot 根目录
-    # cd /path/to/your/AstrBot
-    mkdir -p data/plugins
-    cd data/plugins
-    git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
-    ```
-    *注意：建议将克隆下来的文件夹重命名为 `astrbot_plugin_pixiv_search` (或与 `metadata.yaml` 中 `name` 字段一致的名称)。*
+## 🚀 快速开始
 
-3. **检查/创建依赖文件**: 确保插件目录下 (`data/plugins/astrbot_plugin_pixiv_search/`) 存在 `requirements.txt` 文件，并包含以下内容：
-    ```txt:requirements.txt
-    # requirements.txt
-    pixivpy3>=3.0.0  # 确保版本兼容
-    aiohttp>=3.8.0   # 用于下载图片
-    ```
+### 前置条件
 
-4. **重启或重载**:
-    * **首次安装**: 重启 AstrBot 以加载新插件及其依赖。
-    * **更新插件**: 在 AstrBot WebUI 的 `插件市场` -> `本地插件` 中找到该插件，点击 `管理` -> `重载插件`。AstrBot 会自动尝试安装 `requirements.txt` 中新增或更新的依赖。如果遇到 `ModuleNotFoundError`，请尝试重启 AstrBot。
+- Python >= 3.10
+- 已部署的 AstrBot 实例 (v3.x+)
+- 有效的 Pixiv 账号和 `refresh_token`
 
-### 配置 Pixiv 凭据与选项 (重要!)
+### 安装步骤
 
-为了让插件能够访问 Pixiv API 并按需工作，你需要进行配置。
+1. **克隆插件到 AstrBot 插件目录**
+   ```bash
+   cd /path/to/astrbot/data/plugins
+   git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
+   ```
 
-1. **通过 AstrBot WebUI 配置 (推荐)**:
-    * 在 AstrBot WebUI 的 `插件管理` 中找到该插件，点击 `操作`->`插件配置`。
-    * 在配置页面中，填写以下信息：
-        * **Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。
-        * **R18 过滤模式**: 选择如何处理 R18 内容，默认为 "过滤 R18"。
-        * **每次返回的图片数量**: 设置每次搜索返回的图片数量，默认为 1，范围为 1-10。
-        * **AI 作品显示**: 选择是否显示 AI 生成的作品，默认为 "显示"。
-    * 有关代理配置，请参考 [AstrBot 文档](https://astrbot.app/config/astrbot-config.html#http-proxy)。
-    * 保存配置。
+2. **确认依赖文件**
+   ```txt
+   # requirements.txt
+   pixivpy3>=3.0.0
+   aiohttp>=3.8.0
+   ```
 
-### 使用方法
+3. **重启 AstrBot** 以加载插件和依赖
 
-配置完成后，你可以在任何已接入 AstrBot 的聊天平台（QQ、Telegram、微信等）中使用以下命令：
+### 配置插件
 
-#### 基本命令
+1. 打开 AstrBot WebUI
+2. 进入 `插件管理` -> 找到 Pixiv 搜索插件
+3. 点击 `插件配置`，填写以下信息：
+   - **Refresh Token**: 必填，用于 Pixiv API 认证
+   - **R18 过滤模式**: 过滤R18/允许R18/仅R18
+   - **返回图片数量**: 1-10张，默认1张
+   - **AI作品显示**: 是否显示AI生成作品
+   - **其他选项**: 详情显示、文件转发等
+
+4. 保存配置
+
+### 获取 Refresh Token
+
+参考以下资源获取 Pixiv `refresh_token`:
+- [pixivpy3 官方文档](https://pypi.org/project/pixivpy3/)
+- [Pixiv OAuth 教程](https://gist.github.com/ZipFile/c9ebedb224406f4f11845ab700124362)
+
+## 📝 使用示例
 
 ```bash
-/pixiv <标签1>,<标签2>,...  # 搜索插画
-/pixiv_help  # 显示帮助信息
-```
-
-*   使用英文逗号 `,` 分隔多个标签。
-*   标签可以是中文、英文或日文。
-*   多个标签是 `或` 关系。
-
-例如：
-
-```
+# 基础搜索
 /pixiv 初音ミク,VOCALOID
 /pixiv scenery,beautiful
+
+# 高级搜索  
+/pixiv_deepsearch 原神,风景
+/pixiv_and 初音ミク,可爱
+
+# 获取推荐和排行榜
+/pixiv_recommended
+/pixiv_ranking daily
+
+# 用户相关
+/pixiv_user_search 某个画师名
+/pixiv_user_detail 123456
+
+# 获取帮助
+/pixiv_help
 ```
 
-#### 高级命令
+## ⚙️ 配置选项
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `refresh_token` | Pixiv API 认证令牌 | 必填 |
+| `r18_mode` | R18内容处理模式 | 过滤R18 |
+| `image_count` | 每次返回图片数量 | 1 |
+| `ai_type` | AI作品显示设置 | 显示 |
+| `show_details` | 是否显示详细信息 | true |
+| `show_filter_result` | 是否显示过滤提示 | true |
+| `is_fromfilesystem` | 是否通过文件转发 | true |
+
+## 🛠️ 开发构建
 
 ```bash
-/pixiv_recommended  # 获取推荐作品
-/pixiv_user_search <用户名>  # 搜索Pixiv用户
-/pixiv_specific <作品ID>  # 获取指定作品详情
-/pixiv_user_detail <用户ID>  # 获取指定用户的详细信息
-/pixiv_user_illusts <用户ID>  # 获取指定用户的作品
-/pixiv_novel <标签1>,<标签2>,...  # 搜索小说
-/pixiv_ranking [mode] [date]  # 获取排行榜作品
-/pixiv_related <作品ID>  # 获取与指定作品相关的其他作品
-/pixiv_trending_tags  # 获取插画趋势标签
-/pixiv_config  # 查看和修改配置
-/pixiv_deepsearch <标签1>,<标签2>,...  # 深度搜索
-/pixiv_and <标签1>,<标签2>,...  # 与搜索
+# 克隆项目
+git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
+cd astrbot_plugin_pixiv_search
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 部署到 AstrBot
+cp -r . /path/to/astrbot/data/plugins/astrbot_plugin_pixiv_search/
 ```
 
-所有命令（除 `/pixiv_recommended`）在参数缺省时会显示详细的帮助信息。
+## 🔧 故障排除
 
-#### 标签显示格式
+**SSL 错误**: 如遇到 `SSLError`，请更新 DNS 解析设置。参考: [SSLError 解决方案](https://github.com/upbit/pixivpy/issues/244)
 
-插件将以易读的格式显示标签信息，格式为：`标签名(翻译名)`。如果没有翻译名，则只显示标签名。
+**模块未找到**: 重启 AstrBot 以确保依赖正确安装
 
-例如：
-```
-标签: 原神(Genshin Impact), シトラリ, Citlali, 美脚(beautiful legs), 裸足(barefoot)
-```
+**API 认证失败**: 检查 `refresh_token` 是否有效和正确配置
 
-机器人将会根据你的配置（R18 模式、返回数量）搜索并回复相应的插画图片及信息。
+**TUN 代理**: 建议使用TUN模式代理，如果需要内联使用 TUN 代理，请参考 [TUN 代理配置Issue](https://github.com/vmoranv/astrbot_plugin_pixiv_search/issues/12)
 
-## 支持
+## 📖 更多信息
 
-如需更多帮助，请访问 [AstrBot 官方文档](https://astrbot.app/)
+- [AstrBot 官方文档](https://astrbot.app/)
+- [插件开发指南](https://astrbot.app/develop/plugin.html)
+- [问题反馈](https://github.com/vmoranv/astrbot_plugin_pixiv_search/issues)
 
-***重要***:如果遇到`SSLError`请更新DNS解析,移步至该issue:[SSLError](https://github.com/upbit/pixivpy/issues/244)
+## ⭐ 项目统计
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=vmoranv/astrbot_plugin_pixiv_search&type=Date)](https://star-history.com/#vmoranv/astrbot_plugin_pixiv_search&Date)
+
+![Analytics](https://repobeats.axiom.co/api/embed/9e6727cd94536119069eebccfe45b505ac499470.svg "Repobeats analytics image")
+
+</div>
+
+## 📄 许可证
+
+本项目遵循开源许可证，具体许可证信息请查看项目根目录下的 LICENSE 文件。
+
+---
+
+**注意**: 使用本插件需遵守 Pixiv 服务条款和相关法律法规。请合理使用 API 避免频繁请求。

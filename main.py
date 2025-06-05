@@ -50,7 +50,13 @@ class PixivSearchPlugin(Star):
         self.is_fromfilesystem = self.config.get("is_fromfilesystem", True)
         self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
         self._refresh_task: asyncio.Task = None
-
+        self.AUTH_ERROR_MSG = (
+            "Pixiv API 认证失败，请检查配置中的凭据信息。\n"
+            "先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n"
+            "再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 "
+            "[pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
+        )
+        
         # 记录初始化信息，包含 AI 过滤模式和详细信息设置
         logger.info(
             f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, "
@@ -249,13 +255,13 @@ class PixivSearchPlugin(Star):
         if not cleaned_tags:
             logger.info("Pixiv 插件：用户未提供搜索标签或标签为空，返回帮助信息。")
             yield event.plain_result(
-                "请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
+                "请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。\n" + self.AUTH_ERROR_MSG
             )
             return
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         # 标签搜索处理
@@ -370,9 +376,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         logger.info("Pixiv 插件：获取推荐作品")
@@ -501,9 +505,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -579,9 +581,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         logger.info(f"Pixiv 插件：获取相关作品 - ID: {illust_id}")
@@ -656,9 +656,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -694,16 +692,18 @@ class PixivSearchPlugin(Star):
             if self.show_filter_result:
                 for msg in filter_msgs:
                     yield event.plain_result(msg)
+
+            # 始终显示用户基本信息
+            yield event.plain_result(user_info)
+
+            # 如果有合规插画，发送第一张插画
             if filtered_illusts:
                 illust = filtered_illusts[0]
-                detail_message = f"{user_info}\n"
+                detail_message = build_detail_message(illust, is_novel=False)
                 async for result in self.send_pixiv_image(
                     event, illust, detail_message, show_details=self.show_details
                 ):
                     yield result
-            else:
-                # 没有合规插画，仅返回用户信息
-                yield event.plain_result(user_info)
 
         except Exception as e:
             logger.error(f"Pixiv 插件：搜索用户时发生错误 - {e}")
@@ -737,9 +737,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -806,9 +804,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -890,9 +886,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -943,9 +937,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-            )
+            yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
         try:
@@ -1127,7 +1119,7 @@ class PixivSearchPlugin(Star):
         # 验证是否已认证
         if not await self._authenticate():
             yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。 "
+                "Pixiv API 认证失败，请检查配置中的凭据信息。\n" + self.AUTH_ERROR_MSG
             )
             return
 
