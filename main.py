@@ -87,7 +87,7 @@ class PixivSearchPlugin(Star):
         if not tags_str:
             return [], [], []
             
-        all_tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
+        all_tags = [tag.strip() for tag in tags_str.replace("，", ",").split(",") if tag.strip()]
         include_tags = []
         exclude_tags = []
         
