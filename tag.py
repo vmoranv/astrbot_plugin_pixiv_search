@@ -29,7 +29,6 @@ def is_ai(item):
                 return True
     return False
 
-
 def filter_illusts_with_reason(
     illusts,
     r18_mode,
@@ -40,12 +39,15 @@ def filter_illusts_with_reason(
     return_count=1,
     logger=None,
     show_filter_result=True,
+    excluded_tags=None,
 ):
     """
-    统一R18/AI过滤逻辑，返回过滤后的插画列表和详细过滤提示（如需）。
+    统一R18/AI/排除标签过滤逻辑，返回过滤后的插画列表和详细过滤提示（如需）。
     """
     initial_count = len(illusts)
     filtered_list = []
+    excluded_tags = excluded_tags or []
+    
     for illust in illusts:
         if r18_mode == "过滤 R18" and is_r18(illust):
             continue
@@ -55,11 +57,15 @@ def filter_illusts_with_reason(
             continue
         if ai_filter_mode == "仅 AI 作品" and not is_ai(illust):
             continue
+        if excluded_tags and has_excluded_tags(illust, excluded_tags):
+            continue
         filtered_list.append(illust)
+    
     filtered_count = len(filtered_list)
     filter_msgs = []
     if not show_filter_result:
         return filtered_list, []
+    
     # 过滤信息提示
     if filtered_count < initial_count:
         filter_reasons = []
@@ -67,14 +73,17 @@ def filter_illusts_with_reason(
             filter_reasons.append("R18")
         if ai_filter_mode == "过滤 AI 作品" or ai_filter_mode == "仅 AI 作品":
             filter_reasons.append("AI")
+        if excluded_tags:
+            filter_reasons.append("排除标签")
         if filter_reasons:
             filter_msgs.append(
-                f"部分作品因 R18/AI 设置被过滤 (找到 {initial_count} 个符合所有标签的作品，最终剩 {filtered_count} 个可发送)。"
+                f"部分作品因 {'/'.join(filter_reasons)} 设置被过滤 (找到 {initial_count} 个符合所有标签的作品，最终剩 {filtered_count} 个可发送)。"
             )
     elif initial_count > 0:
         filter_msgs.append(
             f"筛选完成，共找到 {initial_count} 个符合所有标签「{display_tag_str or ''}」的作品。正在发送最多 {return_count} 张..."
         )
+    
     # 结果为空时详细原因
     if not filtered_list:
         no_result_reason = []
@@ -86,6 +95,8 @@ def filter_illusts_with_reason(
             no_result_reason.append("非 R18 内容")
         if ai_filter_mode == "仅 AI 作品" and not any(is_ai(i) for i in illusts):
             no_result_reason.append("非 AI 作品")
+        if excluded_tags and any(has_excluded_tags(i, excluded_tags) for i in illusts):
+            no_result_reason.append("包含排除标签")
         if no_result_reason and initial_count > 0:
             filter_msgs.append(
                 f"所有找到的作品均为 {' 或 '.join(no_result_reason)}，根据当前设置已被过滤。"
@@ -111,7 +122,6 @@ def filter_illusts_with_reason(
                 )
             filter_msgs.append("筛选后没有符合条件的作品可发送。")
     return filtered_list, filter_msgs
-
 
 def format_tags(tags) -> str:
     """
@@ -190,3 +200,26 @@ def build_detail_message(item, is_novel=False):
         tags_str = format_tags(getattr(item, "tags", []))
         link = f"https://www.pixiv.net/artworks/{item.id}"
         return f"标题: {title}\n作者: {author}\n标签: {tags_str}\n链接: {link}"
+
+def has_excluded_tags(item, excluded_tags):
+    """
+    检查作品是否包含需要排除的标签
+    
+    Args:
+        item: Pixiv作品对象
+        excluded_tags: 需要排除的标签列表（已转换为小写）
+    
+    Returns:
+        bool: 如果包含排除标签返回True，否则返回False
+    """
+    if not excluded_tags:
+        return False
+        
+    tags = getattr(item, "tags", [])
+    for tag in tags:
+        name = tag.get("name") if isinstance(tag, dict) else tag
+        if isinstance(name, str):
+            lname = name.lower()
+            if any(excluded_tag in lname for excluded_tag in excluded_tags):
+                return True
+    return False

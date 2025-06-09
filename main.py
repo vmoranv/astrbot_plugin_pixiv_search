@@ -21,7 +21,7 @@ from .tag import build_detail_message, filter_illusts_with_reason
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.2",
+    "1.2.3",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -74,7 +74,40 @@ class PixivSearchPlugin(Star):
         else:
             logger.info("Pixiv 插件：Refresh Token 自动刷新已禁用 (间隔 <= 0)。")
 
-    def filter_items(self, items, tag_label):
+    def parse_tags_with_exclusion(self, tags_str):
+        """
+        解析标签字符串，分离包含标签和排除标签
+        
+        Args:
+            tags_str: 标签字符串，如 "萝莉,-R18,可爱"
+            
+        Returns:
+            tuple: (包含标签列表, 排除标签列表, 冲突标签列表)
+        """
+        if not tags_str:
+            return [], [], []
+            
+        all_tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
+        include_tags = []
+        exclude_tags = []
+        
+        for tag in all_tags:
+            if tag.startswith("-"):
+                exclude_tags.append(tag[1:].lower())
+            else:
+                include_tags.append(tag)
+        
+        # 检查冲突标签
+        include_tags_lower = [tag.lower() for tag in include_tags]
+        conflict_tags = []
+        
+        for exclude_tag in exclude_tags:
+            if exclude_tag in include_tags_lower:
+                conflict_tags.append(exclude_tag)
+        
+        return include_tags, exclude_tags, conflict_tags
+
+    def filter_items(self, items, tag_label, excluded_tags=None):
         """
         统一过滤插画/小说的辅助方法，只需传入待过滤对象和标签描述。
         其他参数自动使用插件全局配置。
@@ -87,6 +120,7 @@ class PixivSearchPlugin(Star):
             return_count=self.return_count,
             logger=logger,
             show_filter_result=self.show_filter_result,
+            excluded_tags=excluded_tags,
         )
 
     @staticmethod
@@ -96,7 +130,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.2",
+            "version": "1.2.3",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
@@ -264,11 +298,31 @@ class PixivSearchPlugin(Star):
             yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
+        # 解析包含和排除标签，检查冲突
+        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(cleaned_tags)
+        
+        # 检查是否存在冲突标签
+        if conflict_tags:
+            conflict_list = "、".join(conflict_tags)
+            yield event.plain_result(
+                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
+                f"你药剂把干啥"
+            )
+            return
+        
+        if not include_tags:
+            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
+            return
+        
+        # 使用包含标签进行搜索
+        search_tags = ",".join(include_tags)
+        display_tags = cleaned_tags
+
         # 标签搜索处理
-        logger.info(f"Pixiv 插件：正在搜索标签 - {cleaned_tags}")
+        logger.info(f"Pixiv 插件：正在搜索标签 - {search_tags}，排除标签 - {exclude_tags}")
         try:
             search_result = self.client.search_illust(
-                cleaned_tags, search_target="partial_match_for_tags"
+                search_tags, search_target="partial_match_for_tags"
             )
             initial_illusts = search_result.illusts if search_result.illusts else []
 
@@ -278,7 +332,7 @@ class PixivSearchPlugin(Star):
 
             # 统一使用 filter_illusts_with_reason 进行过滤和提示
             filtered_illusts, filter_msgs = self.filter_items(
-                initial_illusts, cleaned_tags
+                initial_illusts, display_tags, excluded_tags=exclude_tags
             )
             if self.show_filter_result:
                 for msg in filter_msgs:
@@ -327,6 +381,9 @@ class PixivSearchPlugin(Star):
 ## 基本命令
 - `/pixiv <标签1>,<标签2>,...` - 搜索含有任意指定标签的插画 (OR 搜索)
 - `/pixiv_help` - 显示此帮助信息
+
+## 排除标签
+- 使用 `-<标签>` 来排除特定标签。例如：`/pixiv 恋爱,-ntr`
 
 ## 高级命令
 - `/pixiv_recommended` - 获取推荐作品
@@ -869,39 +926,61 @@ class PixivSearchPlugin(Star):
         if not tags.strip() or tags.strip().lower() == "help":
             help_text = """# Pixiv 小说搜索
 
-## 命令格式
-`/pixiv_novel <标签1>,<标签2>,...`
+    ## 命令格式
+    `/pixiv_novel <标签1>,<标签2>,...`
 
-## 参数说明
-- `标签`: 搜索的标签，多个标签用英文逗号分隔
+    ## 参数说明
+    - `标签`: 搜索的标签，多个标签用英文逗号分隔
+    - 支持排除标签功能，使用 -<标签> 来排除特定标签
 
-## 示例
-- `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
-- `/pixiv_novel 百合,GL` - 搜索同时包含"百合"和"GL"标签的小说
-"""
+    ## 示例
+    - `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
+    - `/pixiv_novel 百合,GL` - 搜索同时包含"百合"和"GL"标签的小说
+    - `/pixiv_novel 恋愛,-NTR` - 搜索包含"恋愛"但排除"NTR"的小说
+    """
             yield event.plain_result(help_text)
             return
-
-        logger.info(f"Pixiv 插件：正在搜索小说 - 标签: {tags}")
 
         # 验证是否已认证
         if not await self._authenticate():
             yield event.plain_result(self.AUTH_ERROR_MSG)
             return
 
+        # 解析包含和排除标签，检查冲突
+        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(tags.strip())
+        
+        # 检查是否存在冲突标签
+        if conflict_tags:
+            conflict_list = "、".join(conflict_tags)
+            yield event.plain_result(
+                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
+                f"你药剂把干啥"
+            )
+            return
+        
+        if not include_tags:
+            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
+            return
+
+        # 使用包含标签进行搜索
+        search_tags = ",".join(include_tags)
+        display_tags = tags.strip()
+
+        logger.info(f"Pixiv 插件：正在搜索小说 - 标签: {search_tags}，排除标签: {exclude_tags}")
+
         try:
             # 调用 Pixiv API 搜索小说
             search_result = self.client.search_novel(
-                tags, search_target="partial_match_for_tags"
+                search_tags, search_target="partial_match_for_tags"
             )
             initial_novels = search_result.novels if search_result.novels else []
             if not initial_novels:
-                yield event.plain_result(f"未找到相关小说: {tags}")
+                yield event.plain_result(f"未找到相关小说: {search_tags}")
                 return
 
-            # 统一用 filter_items 进行小说过滤和提示
+            # 应用排除标签过滤
             filtered_novels, filter_msgs = self.filter_items(
-                initial_novels, f"小说:{tags}"
+                initial_novels, display_tags, excluded_tags=exclude_tags
             )
             if self.show_filter_result:
                 for msg in filter_msgs:
@@ -1112,6 +1191,7 @@ class PixivSearchPlugin(Star):
             yield event.plain_result(
                 "用法: /pixiv_deepsearch <标签1>,<标签2>,...\n"
                 "深度搜索 Pixiv 插画，将遍历多个结果页面。\n"
+                "支持排除标签功能，使用 -<标签> 来排除特定标签。\n"
                 f"当前翻页深度设置: {self.deep_search_depth} 页 (-1 表示获取所有页面)"
             )
             return
@@ -1123,19 +1203,33 @@ class PixivSearchPlugin(Star):
             )
             return
 
+        # 解析包含和排除标签，检查冲突
+        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(tags.strip())
+        
+        # 检查是否存在冲突标签
+        if conflict_tags:
+            conflict_list = "、".join(conflict_tags)
+            yield event.plain_result(
+                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
+                f"你药剂把干啥"
+            )
+            return
+        
+        if not include_tags:
+            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
+            return
+
         # 获取翻页深度配置
         deep_search_depth = self.config.get("deep_search_depth", 3)
 
-        # 处理标签
-        tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
-        if not tag_list:
-            yield event.plain_result("请提供至少一个有效的标签。")
-            return
+        # 使用包含标签进行搜索
+        search_tags_list = include_tags
+        display_tags = tags.strip()
 
         # 日志记录
-        tag_str = ", ".join(tag_list)
+        tag_str = ", ".join(search_tags_list)
         logger.info(
-            f"Pixiv 插件：正在深度搜索标签 - {tag_str}，翻页深度: {deep_search_depth}"
+            f"Pixiv 插件：正在深度搜索标签 - {tag_str}，排除标签 - {exclude_tags}，翻页深度: {deep_search_depth}"
         )
 
         # 搜索前发送提示消息
@@ -1151,7 +1245,7 @@ class PixivSearchPlugin(Star):
         try:
             # 准备搜索参数
             search_params = {
-                "word": " ".join(tag_list),
+                "word": " ".join(search_tags_list),
                 "search_target": "partial_match_for_tags",
                 "sort": "popular_desc",
                 "filter": "for_ios",
@@ -1213,7 +1307,8 @@ class PixivSearchPlugin(Star):
                 f"搜索完成！共获取 {page_count} 页，找到 {initial_count} 个结果，正在处理..."
             )
 
-            filtered_illusts, filter_msgs = self.filter_items(all_illusts, tag_str)
+            # 应用排除标签过滤
+            filtered_illusts, filter_msgs = self.filter_items(all_illusts, display_tags, excluded_tags=exclude_tags)
 
             # 1. 无论是否有结果，都先发送过滤信息（如果配置了显示）
             if self.show_filter_result:
@@ -1224,16 +1319,16 @@ class PixivSearchPlugin(Star):
             if not filtered_illusts:
                 # 如果没有结果，发送明确的提示信息然后返回
                 logger.info(
-                    f"Pixiv 插件 (DeepSearch)：经过 R18/AI 过滤后，没有找到符合条件的作品 (标签: {tag_str})。"
+                    f"Pixiv 插件 (DeepSearch)：经过 R18/AI/排除标签 过滤后，没有找到符合条件的作品 (标签: {display_tags})。"
                 )
                 yield event.plain_result(
-                    f"在深度搜索和过滤后，未找到与「{tag_str}」相关且符合 R18/AI 过滤条件的作品。"
+                    f"在深度搜索和过滤后，未找到与「{display_tags}」相关且符合过滤条件的作品。"
                 )
                 return  # 明确返回，不再执行后续发送逻辑
 
             # log记录
             logger.info(
-                f"Pixiv 插件 (DeepSearch)：最终筛选出 {len(filtered_illusts)} 个作品准备发送 (标签: {tag_str})。"
+                f"Pixiv 插件 (DeepSearch)：最终筛选出 {len(filtered_illusts)} 个作品准备发送 (标签: {display_tags})。"
             )
 
             # 打乱顺序，随机选择作品
@@ -1245,7 +1340,7 @@ class PixivSearchPlugin(Star):
             # 发送结果
             if not illusts_to_send:
                 logger.info(
-                    f"深度搜索后没有符合条件的插画可供发送 (可能是 return_count 设置为 0)。(标签: {tag_str})"
+                    f"深度搜索后没有符合条件的插画可供发送 (可能是 return_count 设置为 0)。(标签: {display_tags})"
                 )
                 return
 
@@ -1283,15 +1378,28 @@ class PixivSearchPlugin(Star):
                 "Pixiv 插件 (AND)：用户未提供搜索标签或标签为空，返回帮助信息。"
             )
             yield event.plain_result(
-                "请输入要进行 AND 搜索的标签 (用逗号分隔)。使用 `/pixiv_help` 查看帮助。\n\n**配置说明**:\n1. 先配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n2. 再填入 `refresh_token`->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
+                "请输入要进行 AND 搜索的标签 (用逗号分隔)。使用 `/pixiv_help` 查看帮助。\n"
+                "支持排除标签功能，使用 -<标签> 来排除特定标签。\n\n"
+                "**配置说明**:\n1. 先配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n2. 再填入 `refresh_token`->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
             )
             return
 
-        # 分割标签
-        tag_list = [tag.strip() for tag in cleaned_tags.split(",") if tag.strip()]
-        if len(tag_list) < 2:
+        # 解析包含和排除标签，检查冲突
+        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(cleaned_tags)
+        
+        # 检查是否存在冲突标签
+        if conflict_tags:
+            conflict_list = "、".join(conflict_tags)
             yield event.plain_result(
-                "AND 搜索至少需要两个标签，请用英文逗号 `,` 分隔。"
+                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
+                f"你药剂把干啥"
+            )
+            return
+
+        # AND 搜索至少需要两个包含标签
+        if len(include_tags) < 2:
+            yield event.plain_result(
+                "AND 搜索至少需要两个包含标签，请用英文逗号 `,` 分隔。"
             )
             return
 
@@ -1303,25 +1411,20 @@ class PixivSearchPlugin(Star):
         # 获取翻页深度配置
         deepth = self.deep_search_depth
 
-        # 处理标签：使用 , 分隔，并分离第一个标签和其他标签
-        tag_list_input = [tag.strip() for tag in cleaned_tags.split(",") if tag.strip()]
-        if not tag_list_input:
-            yield event.plain_result("请提供至少一个有效的标签。")
-            return
+        # 处理标签：分离第一个标签和其他标签
+        first_tag = include_tags[0]
+        other_tags = include_tags[1:]
 
-        first_tag = tag_list_input[0]
-        other_tags = tag_list_input[1:]
-
-        # 构建用于显示/日志的标签字符串 (, 分隔)
-        display_tag_str = ",".join(tag_list_input)
+        # 构建用于显示/日志的标签字符串
+        display_tag_str = cleaned_tags
 
         logger.info(
-            f"Pixiv 插件：正在进行 AND 深度搜索。策略：先用标签 '{first_tag}' 深度搜索 (翻页深度: {deepth})，然后本地过滤要求同时包含: {display_tag_str}"
+            f"Pixiv 插件：正在进行 AND 深度搜索。策略：先用标签 '{first_tag}' 深度搜索 (翻页深度: {deepth})，然后本地过滤要求同时包含: {','.join(include_tags)}，排除标签: {exclude_tags}"
         )
 
         # 搜索前发送提示消息
         search_phase_msg = f"正在深度搜索与标签「{first_tag}」相关的作品"
-        filter_phase_msg = f"稍后将筛选出同时包含「{display_tag_str}」所有标签的结果。"
+        filter_phase_msg = f"稍后将筛选出同时包含「{','.join(include_tags)}」所有标签的结果。"
         page_limit_msg = (
             f"将获取 {deepth} 页结果" if deepth != -1 else "将获取所有页面的结果"
         )
@@ -1417,11 +1520,12 @@ class PixivSearchPlugin(Star):
 
             initial_count = len(and_filtered_illusts)
             logger.info(
-                f"Pixiv 插件：本地 AND 过滤完成，找到 {initial_count} 个同时包含「{display_tag_str}」所有标签的作品。"
+                f"Pixiv 插件：本地 AND 过滤完成，找到 {initial_count} 个同时包含「{','.join(include_tags)}」所有标签的作品。"
             )
 
+            # 应用排除标签过滤
             final_filtered_illusts, filter_msgs = self.filter_items(
-                and_filtered_illusts, display_tag_str
+                and_filtered_illusts, display_tag_str, excluded_tags=exclude_tags
             )
 
             # 1. 无论是否有结果，都先发送过滤信息
@@ -1432,10 +1536,10 @@ class PixivSearchPlugin(Star):
             # 2. 检查最终过滤后是否还有结果
             if not final_filtered_illusts:
                 logger.info(
-                    f"Pixiv 插件 (AND)：经过 R18/AI 过滤后，没有找到符合条件的作品 (标签: {display_tag_str})。"
+                    f"Pixiv 插件 (AND)：经过 R18/AI/排除标签 过滤后，没有找到符合条件的作品 (标签: {display_tag_str})。"
                 )
                 yield event.plain_result(
-                    f"在深度搜索和过滤后，未找到同时包含「{display_tag_str}」所有标签且符合 R18/AI 过滤条件的作品。"
+                    f"在深度搜索和过滤后，未找到同时包含「{','.join(include_tags)}」所有标签且符合过滤条件的作品。"
                 )
                 return
 
