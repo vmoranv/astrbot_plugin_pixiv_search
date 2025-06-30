@@ -13,15 +13,15 @@ from astrbot.api.message_components import Image, Plain, Node, Nodes
 from astrbot.api.all import command
 from pixivpy3 import AppPixivAPI, PixivError
 
-from .config import TEMP_DIR, clean_temp_dir
-from .tag import build_detail_message, filter_illusts_with_reason
+from .config import TEMP_DIR, clean_temp_dir, smart_clean_temp_dir
+from .tag import build_detail_message, filter_illusts_with_reason, FilterConfig
 
 
 @register(
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.3",
+    "1.2.4",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -50,6 +50,7 @@ class PixivSearchPlugin(Star):
         self.is_fromfilesystem = self.config.get("is_fromfilesystem", True)
         self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
         self._refresh_task: asyncio.Task = None
+        self._http_session = None
         self.AUTH_ERROR_MSG = (
             "Pixiv API 认证失败，请检查配置中的凭据信息。\n"
             "先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n"
@@ -112,16 +113,17 @@ class PixivSearchPlugin(Star):
         统一过滤插画/小说的辅助方法，只需传入待过滤对象和标签描述。
         其他参数自动使用插件全局配置。
         """
-        return filter_illusts_with_reason(
-            items,
-            self.r18_mode,
-            self.ai_filter_mode,
+        config = FilterConfig(
+            r18_mode=self.r18_mode,
+            ai_filter_mode=self.ai_filter_mode,
             display_tag_str=tag_label,
             return_count=self.return_count,
             logger=logger,
             show_filter_result=self.show_filter_result,
-            excluded_tags=excluded_tags,
+            excluded_tags=excluded_tags or []
         )
+        
+        return filter_illusts_with_reason(items, config)
 
     @staticmethod
     def info() -> Dict[str, Any]:
@@ -130,7 +132,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.3",
+            "version": "1.2.4",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
@@ -141,7 +143,7 @@ class PixivSearchPlugin(Star):
         try:
             if self.refresh_token:
                 # 调用 auth()，pixivpy3 会在需要时刷新 token
-                self.client.auth(refresh_token=self.refresh_token)
+                await asyncio.to_thread(self.client.auth, refresh_token=self.refresh_token)
                 logger.info("Pixiv 插件：认证状态检查/刷新完成。")
                 return True
             else:
@@ -173,6 +175,9 @@ class PixivSearchPlugin(Star):
             通过 yield 方式返回消息结果对象，供主命令 yield 派发
         """
 
+        # 使用智能清理策略，避免每次都进行文件系统操作
+        await smart_clean_temp_dir(probability=0.1, max_files=20)
+
         # 自动选择最佳图片链接
         img_urls = getattr(illust, "image_urls", None)
         image_url = None
@@ -187,8 +192,6 @@ class PixivSearchPlugin(Star):
             yield event.plain_result("未找到可用图片链接，无法发送。")
             return
 
-        # 1. 清理缓存目录，保证不超过20张
-        clean_temp_dir(max_files=20)
         filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
         try:
             async with aiohttp.ClientSession() as session:
@@ -321,8 +324,11 @@ class PixivSearchPlugin(Star):
         # 标签搜索处理
         logger.info(f"Pixiv 插件：正在搜索标签 - {search_tags}，排除标签 - {exclude_tags}")
         try:
-            search_result = self.client.search_illust(
-                search_tags, search_target="partial_match_for_tags"
+            # 包装同步搜索调用
+            search_result = await asyncio.to_thread(
+                self.client.search_illust,
+                search_tags, 
+                search_target="partial_match_for_tags"
             )
             initial_illusts = search_result.illusts if search_result.illusts else []
 
@@ -1161,14 +1167,28 @@ class PixivSearchPlugin(Star):
                     return
                 self.config[key] = v
             elif typ == "int":
-                v = int(value)
-                minv, maxv = schema[key].get("min", None), schema[key].get("max", None)
-                if (minv is not None and v < minv) or (maxv is not None and v > maxv):
-                    yield event.plain_result(
-                        f"超出范围: {v}，应在 {minv} ~ {maxv} 之间"
-                    )
+                try:
+                    v = int(value)
+                    # 应用配置文件中定义的验证规则
+                    if "validation" in schema[key]:
+                        if schema[key]["validation"] == "value = max(min(value, 10), 1)":
+                            v = max(min(v, 10), 1)
+                        elif schema[key]["validation"] == "value = value == -1 ? -1 : max(min(value, 50), 1)":
+                            v = -1 if v == -1 else max(min(v, 50), 1)
+                        elif schema[key]["validation"] == "value = max(min(value, 20), 1)":
+                            v = max(min(v, 20), 1)
+                    
+                    # 应用标准的 min/max 检查
+                    minv, maxv = schema[key].get("min", None), schema[key].get("max", None)
+                    if (minv is not None and v < minv) or (maxv is not None and v > maxv):
+                        yield event.plain_result(
+                            f"配置项 {key} 的值必须在 {minv} 到 {maxv} 之间。"
+                        )
+                        return
+                    self.config[key] = v
+                except ValueError:
+                    yield event.plain_result(f"配置项 {key} 的值 '{value}' 不是有效的整数。")
                     return
-                self.config[key] = v
             self.config.save_config()
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
@@ -1700,4 +1720,12 @@ class PixivSearchPlugin(Star):
             except Exception as e:
                 logger.error(f"等待 Pixiv Token 刷新任务取消时发生错误: {e}")
         logger.info("Pixiv 搜索插件已停用。")
+        # 关闭HTTP会话
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
         pass
+
+    async def _get_http_session(self):
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
