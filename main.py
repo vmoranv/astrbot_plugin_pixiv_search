@@ -5,6 +5,7 @@ import aiohttp
 import aiofiles
 import uuid
 import os
+import json
 
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -15,13 +16,15 @@ from pixivpy3 import AppPixivAPI, PixivError
 
 from .config import TEMP_DIR, clean_temp_dir, smart_clean_temp_dir
 from .tag import build_detail_message, filter_illusts_with_reason, FilterConfig
+from .database import initialize_database, add_subscription, remove_subscription, list_subscriptions
+from .subscription import SubscriptionService
 
 
 @register(
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.4",
+    "1.2.5",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -49,8 +52,11 @@ class PixivSearchPlugin(Star):
         self.forward_threshold = self.config.get("forward_threshold", 5)
         self.is_fromfilesystem = self.config.get("is_fromfilesystem", True)
         self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
+        self.subscription_enabled = self.config.get("subscription_enabled", True)
+        self.subscription_check_interval_minutes = self.config.get("subscription_check_interval_minutes", 30)
         self._refresh_task: asyncio.Task = None
         self._http_session = None
+        self.sub_service = None
         self.AUTH_ERROR_MSG = (
             "Pixiv API 认证失败，请检查配置中的凭据信息。\n"
             "先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n"
@@ -58,22 +64,33 @@ class PixivSearchPlugin(Star):
             "[pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
         )
         
-        # 记录初始化信息，包含 AI 过滤模式和详细信息设置
+        # 初始化数据库
+        initialize_database()
+
+        # 记录初始化信息
         logger.info(
             f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, "
             f"return_count={self.return_count}, r18_mode='{self.r18_mode}', "
             f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}, "
-            f"refresh_interval={self.refresh_interval} 分钟"
+            f"refresh_interval={self.refresh_interval} 分钟, "
+            f"subscription_enabled={self.subscription_enabled}"
         )
 
-        # 启动后台刷新任务 (如果间隔大于 0)
+        # 启动后台刷新任务
         if self.refresh_interval > 0:
             self._refresh_task = asyncio.create_task(self._periodic_token_refresh())
             logger.info(
                 f"Pixiv 插件：已启动 Refresh Token 自动刷新任务，间隔 {self.refresh_interval} 分钟。"
             )
         else:
-            logger.info("Pixiv 插件：Refresh Token 自动刷新已禁用 (间隔 <= 0)。")
+            logger.info("Pixiv 插件：Refresh Token 自动刷新已禁用。")
+
+        # 启动订阅服务
+        if self.subscription_enabled:
+            self.sub_service = SubscriptionService(self)
+            self.sub_service.start()
+        else:
+            logger.info("Pixiv 插件：订阅功能已禁用。")
 
     def parse_tags_with_exclusion(self, tags_str):
         """
@@ -132,7 +149,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.4",
+            "version": "1.2.5",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
@@ -174,11 +191,8 @@ class PixivSearchPlugin(Star):
         返回：
             通过 yield 方式返回消息结果对象，供主命令 yield 派发
         """
-
-        # 使用智能清理策略，避免每次都进行文件系统操作
         await smart_clean_temp_dir(probability=0.1, max_files=20)
 
-        # 自动选择最佳图片链接
         img_urls = getattr(illust, "image_urls", None)
         image_url = None
         if img_urls:
@@ -378,6 +392,77 @@ class PixivSearchPlugin(Star):
             logger.error(f"Pixiv 插件：搜索插画时发生错误 - {e}")
             yield event.plain_result(f"搜索插画时发生错误: {str(e)}")
 
+    @command("pixiv_subscribe_add")
+    async def pixiv_subscribe_add(self, event: AstrMessageEvent, artist_id: str = ""):
+        """订阅画师"""
+        if not self.subscription_enabled:
+            yield event.plain_result("订阅功能未启用。")
+            return
+
+        if not artist_id or not artist_id.isdigit():
+            yield event.plain_result("请输入有效的画师ID。用法: /pixiv_subscribe_add <画师ID>")
+            return
+
+        platform_name = event.platform_meta.name
+        message_type = event.get_message_type().value
+        session_id = f"{platform_name}:{message_type}:{event.get_group_id() or event.get_sender_id()}"
+
+        sub_type = 'artist'
+        target_name = artist_id
+        
+        try:
+            if not await self._authenticate():
+                yield event.plain_result(self.AUTH_ERROR_MSG)
+                return
+            user_detail = await asyncio.to_thread(self.client.user_detail, int(artist_id))
+            if user_detail and user_detail.user:
+                target_name = user_detail.user.name
+        except Exception as e:
+            logger.error(f"获取画师 {artist_id} 信息失败: {e}")
+            yield event.plain_result(f"无法获取画师ID {artist_id} 的信息，但仍会使用该ID进行订阅。")
+
+        success, message = add_subscription(event.get_group_id() or event.get_sender_id(), 
+                                            session_id, 
+                                            sub_type, 
+                                            artist_id, 
+                                            target_name)
+        yield event.plain_result(message)
+    @command("pixiv_subscribe_remove")
+    async def pixiv_subscribe_remove(self, event: AstrMessageEvent, artist_id: str = ""):
+        """取消订阅画师"""
+        if not self.subscription_enabled:
+            yield event.plain_result("订阅功能未启用。")
+            return
+
+        if not artist_id or not artist_id.isdigit():
+            yield event.plain_result("请输入有效的画师ID。用法: /pixiv_subscribe_remove <画师ID>")
+            return
+
+        chat_id = event.get_group_id() or event.get_sender_id()
+        sub_type = 'artist'
+        
+        success, message = remove_subscription(chat_id, sub_type, artist_id)
+        yield event.plain_result(message)
+
+    @command("pixiv_subscribe_list")
+    async def pixiv_subscribe_list(self, event: AstrMessageEvent):
+        """查看当前订阅列表"""
+        if not self.subscription_enabled:
+            yield event.plain_result("订阅功能未启用。")
+            return
+
+        chat_id = event.get_group_id() or event.get_sender_id()
+        subs = list_subscriptions(chat_id)
+        
+        if not subs:
+            yield event.plain_result("您还没有任何订阅。")
+            return
+        
+        msg = "您的订阅列表：\n"
+        for sub in subs:
+            msg += f"- [画师] {sub.target_name} ({sub.target_id})\n"
+        yield event.plain_result(msg)
+
     @command("pixiv_help")
     async def pixiv_help(self, event: AstrMessageEvent):
         """生成并返回帮助信息"""
@@ -390,6 +475,11 @@ class PixivSearchPlugin(Star):
 
 ## 排除标签
 - 使用 `-<标签>` 来排除特定标签。例如：`/pixiv 恋爱,-ntr`
+
+## 订阅功能
+- `/pixiv_subscribe_add <画师ID>` - 订阅画师
+- `/pixiv_subscribe_remove <画师ID>` - 取消订阅画师
+- `/pixiv_subscribe_list` - 查看当前订阅列表
 
 ## 高级命令
 - `/pixiv_recommended` - 获取推荐作品
@@ -1709,6 +1799,9 @@ class PixivSearchPlugin(Star):
     async def terminate(self):
         """插件终止时调用的清理函数"""
         logger.info("Pixiv 搜索插件正在停用...")
+        # 停止订阅服务
+        if self.sub_service:
+            self.sub_service.stop()
         # 取消后台刷新任务
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()

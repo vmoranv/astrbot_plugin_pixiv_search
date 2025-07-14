@@ -78,5 +78,19 @@
       "default": 180,
       "min": 0,
       "max": 10080
+  },
+  "subscription_enabled": {
+      "description": "是否启用订阅功能",
+      "type": "bool",
+      "hint": "启用后，用户将能够订阅画师和标签，并接收更新推送。",
+      "default": true
+  },
+  "subscription_check_interval_minutes": {
+      "description": "订阅更新检查间隔（分钟）",
+      "type": "int",
+      "hint": "后台任务检查订阅更新的频率。建议不要设置得太频繁，以免给 Pixiv 服务器带来过大压力。",
+      "default": 30,
+      "min": 5,
+      "max": 1440
   }
-} 
+}

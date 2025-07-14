@@ -39,6 +39,11 @@
 - `/pixiv_user_detail <用户ID>` - 用户详细信息
 - `/pixiv_related <作品ID>` - 相关作品推荐
 
+### 订阅功能
+- `/pixiv_subscribe_add <画师ID>` - 订阅画师
+- `/pixiv_subscribe_remove <画师ID>` - 取消订阅画师
+- `/pixiv_subscribe_list` - 查看当前订阅列表
+
 ## 🚀 快速开始
 
 ### 前置条件
@@ -104,6 +109,11 @@
 
 # 获取帮助
 /pixiv_help
+
+# 订阅功能
+/pixiv_subscribe_add 123456
+/pixiv_subscribe_remove 123456
+/pixiv_subscribe_list
 ```
 
 ## ⚙️ 配置选项
