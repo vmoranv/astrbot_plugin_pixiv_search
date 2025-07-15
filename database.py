@@ -49,7 +49,7 @@ def initialize_database():
         if not db.is_closed():
             db.close()
 
-def add_subscription(chat_id: str, session_id_json: str, sub_type: str, target_id: str, target_name: str = None) -> (bool, str):
+def add_subscription(chat_id: str, session_id_json: str, sub_type: str, target_id: str, target_name: str = None, initial_illust_id: int = 0) -> (bool, str):
     """
     添加订阅
 
@@ -58,6 +58,7 @@ def add_subscription(chat_id: str, session_id_json: str, sub_type: str, target_i
     :param sub_type: 订阅类型 (当前仅支持 'artist')
     :param target_id: 目标 ID
     :param target_name: 目标名称
+    :param initial_illust_id: 初始的最后通知作品ID
     :return: (是否成功, 消息)
     """
     try:
@@ -67,9 +68,10 @@ def add_subscription(chat_id: str, session_id_json: str, sub_type: str, target_i
                 session_id=session_id_json,
                 sub_type='artist', # 硬编码为 artist
                 target_id=target_id,
-                target_name=target_name or target_id
+                target_name=target_name or target_id,
+                last_notified_illust_id=initial_illust_id
             )
-        logger.info(f"聊天 {chat_id} 成功添加对 artist: {target_id} 的订阅。")
+        logger.info(f"聊天 {chat_id} 成功添加对 artist: {target_id} 的订阅，初始作品ID: {initial_illust_id}。")
         return True, f"成功订阅画师: {target_name or target_id}！"
     except pw.IntegrityError:
         logger.warning(f"聊天 {chat_id} 尝试重复订阅 artist: {target_id}。")

@@ -37,7 +37,6 @@ class SubscriptionService:
 
     async def check_subscriptions(self):
         """检查所有订阅并推送更新"""
-        logger.info("开始检查订阅更新...")
         if not await self.plugin._authenticate():
             logger.error("订阅检查失败：Pixiv API 认证失败。")
             return

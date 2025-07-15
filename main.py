@@ -414,9 +414,22 @@ class PixivSearchPlugin(Star):
             if not await self._authenticate():
                 yield event.plain_result(self.AUTH_ERROR_MSG)
                 return
+            
+            # 获取画师信息
             user_detail = await asyncio.to_thread(self.client.user_detail, int(artist_id))
             if user_detail and user_detail.user:
                 target_name = user_detail.user.name
+            
+            # 获取画师最新作品ID作为初始值
+            latest_illust_id = 0
+            try:
+                user_illusts = await asyncio.to_thread(self.client.user_illusts, int(artist_id))
+                if user_illusts and user_illusts.illusts:
+                    latest_illust_id = user_illusts.illusts[0].id
+                    logger.info(f"获取到画师 {artist_id} 的最新作品ID: {latest_illust_id}")
+            except Exception as e:
+                logger.warning(f"获取画师 {artist_id} 最新作品ID失败: {e}，将使用默认值 0")
+                
         except Exception as e:
             logger.error(f"获取画师 {artist_id} 信息失败: {e}")
             yield event.plain_result(f"无法获取画师ID {artist_id} 的信息，但仍会使用该ID进行订阅。")
@@ -425,7 +438,8 @@ class PixivSearchPlugin(Star):
                                             session_id, 
                                             sub_type, 
                                             artist_id, 
-                                            target_name)
+                                            target_name,
+                                            latest_illust_id)
         yield event.plain_result(message)
     @command("pixiv_subscribe_remove")
     async def pixiv_subscribe_remove(self, event: AstrMessageEvent, artist_id: str = ""):
