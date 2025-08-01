@@ -54,6 +54,7 @@ class PixivSearchPlugin(Star):
         self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
         self.subscription_enabled = self.config.get("subscription_enabled", True)
         self.subscription_check_interval_minutes = self.config.get("subscription_check_interval_minutes", 30)
+        self.proxy = self.config.get("proxy", "")
         self._refresh_task: asyncio.Task = None
         self._http_session = None
         self.sub_service = None
@@ -73,7 +74,8 @@ class PixivSearchPlugin(Star):
             f"return_count={self.return_count}, r18_mode='{self.r18_mode}', "
             f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}, "
             f"refresh_interval={self.refresh_interval} 分钟, "
-            f"subscription_enabled={self.subscription_enabled}"
+            f"subscription_enabled={self.subscription_enabled}, "
+            f"proxy='{self.proxy or '未使用'}'"
         )
 
         # 启动后台刷新任务
@@ -157,6 +159,8 @@ class PixivSearchPlugin(Star):
         """尝试使用配置的凭据进行 Pixiv API 认证"""
         # 每次调用都尝试认证，让 pixivpy3 处理 token 状态
         logger.info("Pixiv 插件：尝试进行 Pixiv API 认证/状态检查...")
+        if self.proxy:
+            self.client.set_proxies(self.proxy)
         try:
             if self.refresh_token:
                 # 调用 auth()，pixivpy3 会在需要时刷新 token
@@ -210,7 +214,7 @@ class PixivSearchPlugin(Star):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    image_url, headers={"Referer": "https://app-api.pixiv.net/"}
+                    image_url, headers={"Referer": "https://app-api.pixiv.net/"}, proxy=self.proxy or None
                 ) as response:
                     if response.status == 200:
                         img_data = await response.read()
@@ -266,7 +270,7 @@ class PixivSearchPlugin(Star):
                     filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
                     if image_url:
                         try:
-                            async with session.get(image_url, headers=headers) as resp:
+                            async with session.get(image_url, headers=headers, proxy=self.proxy or None) as resp:
                                 if resp.status == 200:
                                     img_data = await resp.read()
                                     if self.is_fromfilesystem:

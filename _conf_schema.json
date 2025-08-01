@@ -92,5 +92,11 @@
       "default": 30,
       "min": 5,
       "max": 1440
+  },
+  "proxy": {
+      "description": "代理地址",
+      "type": "string",
+      "hint": "例如 http://127.0.0.1:7890，留空则不使用代理。",
+      "default": ""
   }
 }

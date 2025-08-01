@@ -150,8 +150,6 @@ cp -r . /path/to/astrbot/data/plugins/astrbot_plugin_pixiv_search/
 
 **API 认证失败**: 检查 `refresh_token` 是否有效和正确配置
 
-**TUN 代理**: 建议使用TUN模式代理，如果需要内联使用 TUN 代理，请参考 [TUN 代理配置Issue](https://github.com/vmoranv/astrbot_plugin_pixiv_search/issues/12)
-
 ## 📖 更多信息
 
 - [AstrBot 官方文档](https://astrbot.app/)
