@@ -24,7 +24,7 @@ from .subscription import SubscriptionService
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.6",
+    "1.2.7",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -151,7 +151,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.6",
+            "version": "1.2.7",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
