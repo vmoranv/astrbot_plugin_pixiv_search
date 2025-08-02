@@ -24,7 +24,7 @@ from .subscription import SubscriptionService
     "pixiv_search",
     "vmoranv",
     "Pixiv 图片搜索",
-    "1.2.7",
+    "1.2.8",
     "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
 )
 class PixivSearchPlugin(Star):
@@ -41,7 +41,12 @@ class PixivSearchPlugin(Star):
         """初始化 Pixiv 插件"""
         super().__init__(context)
         self.config = config
-        self.client = AppPixivAPI()
+        self.proxy = self.config.get("proxy", "")
+        requests_kwargs = {}
+        if self.proxy:
+            requests_kwargs['proxies'] = {'http': self.proxy, 'https': self.proxy}
+        
+        self.client = AppPixivAPI(**requests_kwargs)
         self.refresh_token = self.config.get("refresh_token", None)
         self.return_count = self.config.get("return_count", 1)
         self.r18_mode = self.config.get("r18_mode", "过滤 R18")
@@ -54,7 +59,6 @@ class PixivSearchPlugin(Star):
         self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
         self.subscription_enabled = self.config.get("subscription_enabled", True)
         self.subscription_check_interval_minutes = self.config.get("subscription_check_interval_minutes", 30)
-        self.proxy = self.config.get("proxy", "")
         self._refresh_task: asyncio.Task = None
         self._http_session = None
         self.sub_service = None
@@ -151,7 +155,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.2.7",
+            "version": "1.2.8",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
@@ -159,8 +163,6 @@ class PixivSearchPlugin(Star):
         """尝试使用配置的凭据进行 Pixiv API 认证"""
         # 每次调用都尝试认证，让 pixivpy3 处理 token 状态
         logger.info("Pixiv 插件：尝试进行 Pixiv API 认证/状态检查...")
-        if self.proxy:
-            self.client.set_proxies(self.proxy)
         try:
             if self.refresh_token:
                 # 调用 auth()，pixivpy3 会在需要时刷新 token
