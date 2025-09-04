@@ -1022,14 +1022,24 @@ class PixivSearchPlugin(Star):
             # 发送选定的插画
             if not illusts_to_send:
                 logger.info(f"用户 {user_id} 没有符合条件的插画可供发送。")
+                return
 
-            for illust in illusts_to_send:
-                # 统一使用build_detail_message生成详情信息
-                detail_message = build_detail_message(illust, is_novel=False)
-                async for result in self.send_pixiv_image(
-                    event, illust, detail_message, show_details=self.show_details
+            threshold = self.config.get("forward_threshold", 5)
+            if len(illusts_to_send) > threshold:
+                async for result in self.send_forward_message(
+                    event,
+                    illusts_to_send,
+                    lambda illust: build_detail_message(illust, is_novel=False),
                 ):
                     yield result
+            else:
+                for illust in illusts_to_send:
+                    # 统一使用build_detail_message生成详情信息
+                    detail_message = build_detail_message(illust, is_novel=False)
+                    async for result in self.send_pixiv_image(
+                        event, illust, detail_message, show_details=self.show_details
+                    ):
+                        yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：获取用户作品时发生错误 - {e}")
