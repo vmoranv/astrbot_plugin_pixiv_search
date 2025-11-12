@@ -65,6 +65,17 @@
       "hint": "设置为 true 时，过滤内容时会输出提示信息；false 则不输出。",
       "default": true
   },
+  "image_quality": {
+      "description": "默认发送的图片质量",
+      "type": "string",
+      "hint": "选择默认发送的图片质量：'original' (原图), 'large' (大图), 'medium' (中图)",
+      "default": "original",
+      "options": [
+          "original",
+          "large",
+          "medium"
+      ]
+  },
   "is_fromfilesystem": {
     "description": "是否通过文件转发",
     "type": "bool",
