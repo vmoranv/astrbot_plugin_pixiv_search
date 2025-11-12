@@ -25,7 +25,7 @@
 - `/pixiv_and <标签>` - 与搜索(同时包含所有标签)
 - `/pixiv_user_search <用户名>` - 搜索用户
 - `/pixiv_novel <标签>` - 搜索小说
-- `/pixiv_novel download <小说ID>` - 下载小说为 txt 文件
+- `/pixiv_novel download <小说ID>` - 下载小说为 pdf 文件并用文件md5值进行加密
 
 ### 排除 tag
 - `-<tag>` - 排除包含 `<tag>` 的插画(仅在 /pixiv, /pixiv_novel, /pixiv_deepsearch, /pixiv_and 中有效)
@@ -126,12 +126,18 @@
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `refresh_token` | Pixiv API 认证令牌 | 必填 |
-| `r18_mode` | R18内容处理模式 | 过滤R18 |
-| `image_count` | 每次返回图片数量 | 1 |
-| `ai_type` | AI作品显示设置 | 显示 |
-| `show_details` | 是否显示详细信息 | true |
-| `show_filter_result` | 是否显示过滤提示 | true |
-| `is_fromfilesystem` | 是否通过文件转发 | true |
+| `return_count` | 每次搜索返回的图片数量 | 1 |
+| `r18_mode` | R18内容处理模式 | 过滤 R18 |
+| `ai_filter_mode` | AI作品显示设置 | 显示 AI 作品 |
+| `deep_search_depth` | 深度搜索时搜索页数深度 | 3 |
+| `show_details` | 是否在发送图片时附带详细信息 | true |
+| `forward_threshold` | 单次发送图片张数超过该值时自动使用消息转发 | 5 |
+| `show_filter_result` | 是否显示过滤内容提示 | true |
+| `image_quality` | 默认发送的图片质量 (original/large/medium) | original |
+| `is_fromfilesystem` | 是否通过文件转发 | false |
+| `refresh_token_interval_minutes` | 自动刷新 Refresh Token 的间隔时间（分钟） | 180 |
+| `subscription_enabled` | 是否启用订阅功能 | true |
+| `subscription_check_interval_minutes` | 订阅更新检查间隔（分钟） | 30 |
 | `proxy` | 网络代理地址，如 `http://127.0.0.1:7890` | 留空 |
 
 ## 🛠️ 开发构建
