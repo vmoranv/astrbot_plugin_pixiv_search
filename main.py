@@ -186,108 +186,101 @@ class PixivSearchPlugin(Star):
         illust,
         detail_message: str = None,
         show_details: bool = True,
+        send_all_pages: bool = False,
     ):
         """
-        通用Pixiv图片下载与发送函数，自动选择最佳图片链接（original>large>medium），采用本地文件缓存，自动清理缓存目录，发送后删除临时文件。
-
-        参数：
-            event: 消息事件对象（AstrMessageEvent）
-            illust: Pixiv插画对象
-            detail_message: 附加文本（如作品详情，可选，str）
-            show_details: 是否发送详情文本（bool，默认True）
-        返回：
-            通过 yield 方式返回消息结果对象，供主命令 yield 派发
+        通用Pixiv图片下载与发送函数。
+        根据`send_all_pages`参数决定是发送多页作品的所有页面还是仅发送第一页。
+        自动选择最佳图片链接（original>large>medium），采用本地文件缓存，自动清理缓存目录，发送后删除临时文件。
         """
         await smart_clean_temp_dir(probability=0.1, max_files=20)
 
-        quality_preference = ["original", "large", "medium"]
-        # Adjust order based on config
-        start_index = (
-            quality_preference.index(self.image_quality)
-            if self.image_quality in quality_preference
-            else 0
-        )
-        qualities_to_try = quality_preference[start_index:]
+        url_sources = []  # List of tuples: (url_object, detail_message_for_page)
 
-        image_sent = False
-        for quality in qualities_to_try:
-            image_url = None
-            if quality == "original":
-                # For single page illust
-                if (
-                    hasattr(illust, "meta_single_page")
-                    and illust.meta_single_page
-                    and hasattr(illust.meta_single_page, "original_image_url")
-                    and illust.meta_single_page.original_image_url
-                ):
-                    image_url = illust.meta_single_page.original_image_url
-                # For multi-page illust, use the first page
-                elif hasattr(illust, "meta_pages") and illust.meta_pages:
-                    if (
-                        hasattr(illust.meta_pages[0], "image_urls")
-                        and hasattr(illust.meta_pages[0].image_urls, "original")
-                        and illust.meta_pages[0].image_urls.original
-                    ):
-                        image_url = illust.meta_pages[0].image_urls.original
-            else:  # for large, medium
-                if hasattr(illust, "image_urls") and hasattr(
-                    illust.image_urls, quality
-                ):
-                    image_url = getattr(illust.image_urls, quality, None)
+        # Helper class to unify URL structure for single-page illusts
+        class SinglePageUrls:
+            def __init__(self, illust):
+                self.original = getattr(
+                    illust.meta_single_page, "original_image_url", None
+                )
+                self.large = getattr(illust.image_urls, "large", None)
+                self.medium = getattr(illust.image_urls, "medium", None)
 
-            if not image_url:
-                continue
+        if send_all_pages and illust.page_count > 1:
+            for i, page in enumerate(illust.meta_pages):
+                page_detail = (
+                    f"Page {i + 1}/{illust.page_count}\n{detail_message or ''}"
+                )
+                # For multi-page, page.image_urls contains original, large, medium
+                url_sources.append((page.image_urls, page_detail))
+        else:
+            if illust.page_count > 1:
+                # First page of a multi-page work
+                url_obj = illust.meta_pages[0].image_urls
+            else:
+                # A single-page work
+                url_obj = SinglePageUrls(illust)
+            url_sources.append((url_obj, detail_message))
 
-            logger.info(f"Pixiv 插件：尝试发送图片，质量: {quality}, URL: {image_url}")
-            filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        image_url,
-                        headers={"Referer": "https://app-api.pixiv.net/"},
-                        proxy=self.proxy or None,
-                    ) as response:
-                        if response.status == 200:
-                            img_data = await response.read()
-                            async with aiofiles.open(filename, "wb") as f:
-                                await f.write(img_data)
+        for url_obj, msg in url_sources:
+            quality_preference = ["original", "large", "medium"]
+            start_index = (
+                quality_preference.index(self.image_quality)
+                if self.image_quality in quality_preference
+                else 0
+            )
+            qualities_to_try = quality_preference[start_index:]
 
-                            if show_details and detail_message:
-                                yield event.chain_result(
-                                    [
-                                        Image.fromFileSystem(filename),
-                                        Plain(detail_message),
-                                    ]
-                                )
+            image_sent_for_source = False
+            for quality in qualities_to_try:
+                image_url = getattr(url_obj, quality, None)
+                if not image_url:
+                    continue
+
+                logger.info(f"Pixiv 插件：尝试发送图片，质量: {quality}, URL: {image_url}")
+                filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            image_url,
+                            headers={"Referer": "https://app-api.pixiv.net/"},
+                            proxy=self.proxy or None,
+                        ) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                async with aiofiles.open(filename, "wb") as f:
+                                    await f.write(img_data)
+
+                                if show_details and msg:
+                                    yield event.chain_result(
+                                        [Image.fromFileSystem(filename), Plain(msg)]
+                                    )
+                                else:
+                                    yield event.chain_result(
+                                        [Image.fromFileSystem(filename)]
+                                    )
+
+                                image_sent_for_source = True
+                                break  # Success for this source, move to next source
                             else:
-                                yield event.chain_result(
-                                    [Image.fromFileSystem(filename)]
+                                logger.warning(
+                                    f"Pixiv 插件：图片下载失败 (质量: {quality}), 状态码: {response.status}。尝试下一质量..."
                                 )
-
-                            image_sent = True
-                            break  # success, exit loop
-                        else:
-                            logger.warning(
-                                f"Pixiv 插件：图片下载失败 (质量: {quality}), 状态码: {response.status}。尝试下一质量..."
+                except Exception as e:
+                    logger.error(
+                        f"Pixiv 插件：图片下载异常 (质量: {quality}) - {e}。尝试下一质量..."
+                    )
+                finally:
+                    if os.path.exists(filename):
+                        try:
+                            os.remove(filename)
+                        except Exception as e:
+                            print(
+                                f"[PixivPlugin] 删除发送后临时图片失败: {filename}，原因: {e}"
                             )
 
-            except Exception as e:
-                logger.error(
-                    f"Pixiv 插件：图片下载异常 (质量: {quality}) - {e}。尝试下一质量..."
-                )
-            finally:
-                if os.path.exists(filename):
-                    try:
-                        os.remove(filename)
-                    except Exception as e:
-                        print(
-                            f"[PixivPlugin] 删除发送后临时图片失败: {filename}，原因: {e}"
-                        )
-
-        if not image_sent:
-            yield event.plain_result(
-                f"所有质量的图片均下载失败，仅发送信息：\n{detail_message or ''}"
-            )
+            if not image_sent_for_source:
+                yield event.plain_result(f"图片下载失败，仅发送信息：\n{msg or ''}")
 
     async def send_forward_message(self, event, images, build_detail_message_func):
         """
@@ -1808,6 +1801,7 @@ class PixivSearchPlugin(Star):
                 filtered_illusts[0],
                 detail_message,
                 show_details=self.show_details,
+                send_all_pages=True,  # Send all pages for specific illust
             ):
                 yield result
 
