@@ -25,6 +25,7 @@
 - `/pixiv_and <标签>` - 与搜索(同时包含所有标签)
 - `/pixiv_user_search <用户名>` - 搜索用户
 - `/pixiv_novel <标签>` - 搜索小说
+- `/pixiv_novel download <小说ID>` - 下载小说为 txt 文件
 
 ### 排除 tag
 - `-<tag>` - 排除包含 `<tag>` 的插画(仅在 /pixiv, /pixiv_novel, /pixiv_deepsearch, /pixiv_and 中有效)
@@ -95,6 +96,9 @@
 # 基础搜索
 /pixiv 初音ミク,VOCALOID
 /pixiv 茉莉安,-ntr
+
+# 下载小说
+/pixiv_novel download 12345678
 
 # 高级搜索  
 /pixiv_deepsearch 原神,风景

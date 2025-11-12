@@ -6,15 +6,20 @@ import aiofiles
 import uuid
 import os
 import json
+import hashlib
+import io
+import base64
+from pathlib import Path
+from fpdf import FPDF
 
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
-from astrbot.api.message_components import Image, Plain, Node, Nodes
+from astrbot.api.message_components import Image, Plain, Node, Nodes, File
 from astrbot.api.all import command
 from pixivpy3 import AppPixivAPI, PixivError
 
-from .config import TEMP_DIR, clean_temp_dir, smart_clean_temp_dir
+from .config import clean_temp_dir, smart_clean_temp_dir
 from .tag import build_detail_message, filter_illusts_with_reason, FilterConfig
 from .database import initialize_database, add_subscription, remove_subscription, list_subscriptions
 from .subscription import SubscriptionService
@@ -41,6 +46,12 @@ class PixivSearchPlugin(Star):
         """初始化 Pixiv 插件"""
         super().__init__(context)
         self.config = config
+        
+        # 使用 StarTools 获取标准数据目录
+        data_dir = StarTools.get_data_dir("pixiv_search")
+        self.temp_dir = data_dir / "temp"
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+
         self.proxy = self.config.get("proxy", "")
         requests_kwargs = {}
         if self.proxy:
@@ -63,6 +74,11 @@ class PixivSearchPlugin(Star):
         self._refresh_task: asyncio.Task = None
         self._http_session = None
         self.sub_service = None
+
+        # 字体相关初始化
+        # 直接使用插件目录下的本地字体文件
+        self.font_path = Path(__file__).parent / "SmileySans-Oblique.ttf"
+
         self.AUTH_ERROR_MSG = (
             "Pixiv API 认证失败，请检查配置中的凭据信息。\n"
             "先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n"
@@ -193,7 +209,7 @@ class PixivSearchPlugin(Star):
         根据`send_all_pages`参数决定是发送多页作品的所有页面还是仅发送第一页。
         自动选择最佳图片链接（original>large>medium），采用本地文件缓存，自动清理缓存目录，发送后删除临时文件。
         """
-        await smart_clean_temp_dir(probability=0.1, max_files=20)
+        await smart_clean_temp_dir(self.temp_dir, probability=0.1, max_files=20)
 
         url_sources = []  # List of tuples: (url_object, detail_message_for_page)
 
@@ -238,7 +254,7 @@ class PixivSearchPlugin(Star):
                     continue
 
                 logger.info(f"Pixiv 插件：尝试发送图片，质量: {quality}, URL: {image_url}")
-                filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
+                filename = self.temp_dir / f"pixiv_{uuid.uuid4().hex}.jpg"
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
@@ -253,11 +269,11 @@ class PixivSearchPlugin(Star):
 
                                 if show_details and msg:
                                     yield event.chain_result(
-                                        [Image.fromFileSystem(filename), Plain(msg)]
+                                        [Image.fromFileSystem(str(filename)), Plain(msg)]
                                     )
                                 else:
                                     yield event.chain_result(
-                                        [Image.fromFileSystem(filename)]
+                                        [Image.fromFileSystem(str(filename))]
                                     )
 
                                 image_sent_for_source = True
@@ -271,9 +287,10 @@ class PixivSearchPlugin(Star):
                         f"Pixiv 插件：图片下载异常 (质量: {quality}) - {e}。尝试下一质量..."
                     )
                 finally:
-                    if os.path.exists(filename):
+                    if filename.exists():
                         try:
-                            os.remove(filename)
+                            # Use unlink for pathlib.Path object
+                            filename.unlink()
                         except Exception as e:
                             print(
                                 f"[PixivPlugin] 删除发送后临时图片失败: {filename}，原因: {e}"
@@ -288,7 +305,7 @@ class PixivSearchPlugin(Star):
         """
         batch_size = 10
         nickname = "PixivBot"
-        clean_temp_dir(max_files=20)
+        await clean_temp_dir(self.temp_dir, max_files=20)
         for i in range(0, len(images), batch_size):
             batch_imgs = images[i : i + batch_size]
             nodes_list = []
@@ -301,7 +318,7 @@ class PixivSearchPlugin(Star):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                     }
                     node_content = []
-                    filename = os.path.join(TEMP_DIR, f"pixiv_{uuid.uuid4().hex}.jpg")
+                    filename = self.temp_dir / f"pixiv_{uuid.uuid4().hex}.jpg"
                     if image_url:
                         try:
                             async with session.get(image_url, headers=headers, proxy=self.proxy or None) as resp:
@@ -311,7 +328,7 @@ class PixivSearchPlugin(Star):
                                         async with aiofiles.open(filename, "wb") as f:
                                             await f.write(img_data)
                                         node_content.append(
-                                            Image.fromFileSystem(filename)
+                                            Image.fromFileSystem(str(filename))
                                         )
                                     else:
                                         node_content.append(Image.fromBytes(img_data))
@@ -539,7 +556,8 @@ class PixivSearchPlugin(Star):
 - `/pixiv_user_search <用户名>` - 搜索Pixiv用户
 - `/pixiv_user_detail <用户ID>` - 获取指定用户的详细信息
 - `/pixiv_user_illusts <用户ID>` - 获取指定用户的作品
-- `/pixiv_novel <标签1>,<标签2>,...` - 搜索小说 (OR 搜索)
+- `/pixiv_novel <标签1>,...` - 搜索小说
+- `/pixiv_novel_download <小说ID>` - 下载小说为 txt 文件
 - `/pixiv_ranking [mode] [date]` - 获取排行榜作品
 - `/pixiv_related <作品ID>` - 获取与指定作品相关的其他作品
 - `/pixiv_trending_tags` - 获取当前的插画趋势标签
@@ -1078,24 +1096,21 @@ class PixivSearchPlugin(Star):
             yield event.plain_result(f"获取用户作品时发生错误: {str(e)}")
 
     @command("pixiv_novel")
-    async def pixiv_novel(self, event: AstrMessageEvent, tags: str):
+    async def pixiv_novel(self, event: AstrMessageEvent, tags: str = ""):
         """处理 /pixiv_novel 命令，搜索 Pixiv 小说"""
-        # 检查参数是否为空或为 help
-        if not tags.strip() or tags.strip().lower() == "help":
+        cleaned_tags = tags.strip()
+
+        # Handle help and empty cases
+        if not cleaned_tags or cleaned_tags.lower() == "help":
             help_text = """# Pixiv 小说搜索
-
-    ## 命令格式
-    `/pixiv_novel <标签1>,<标签2>,...`
-
-    ## 参数说明
-    - `标签`: 搜索的标签，多个标签用英文逗号分隔
-    - 支持排除标签功能，使用 -<标签> 来排除特定标签
-
-    ## 示例
-    - `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
-    - `/pixiv_novel 百合,GL` - 搜索同时包含"百合"和"GL"标签的小说
-    - `/pixiv_novel 恋愛,-NTR` - 搜索包含"恋愛"但排除"NTR"的小说
-    """
+- **命令格式**: `/pixiv_novel <标签1>,<标签2>,...`
+- **参数说明**:
+  - `标签`: 搜索的标签，多个标签用英文逗号分隔
+  - 支持排除标签功能，使用 `-<标签>` 来排除特定标签
+- **示例**:
+  - `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
+  - `/pixiv_novel 恋愛,-NTR` - 搜索包含"恋愛"但排除"NTR"的小说
+"""
             yield event.plain_result(help_text)
             return
 
@@ -1105,8 +1120,10 @@ class PixivSearchPlugin(Star):
             return
 
         # 解析包含和排除标签，检查冲突
-        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(tags.strip())
-        
+        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(
+            cleaned_tags
+        )
+
         # 检查是否存在冲突标签
         if conflict_tags:
             conflict_list = "、".join(conflict_tags)
@@ -1115,16 +1132,18 @@ class PixivSearchPlugin(Star):
                 f"你药剂把干啥"
             )
             return
-        
+
         if not include_tags:
             yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
             return
 
         # 使用包含标签进行搜索
         search_tags = ",".join(include_tags)
-        display_tags = tags.strip()
+        display_tags = cleaned_tags
 
-        logger.info(f"Pixiv 插件：正在搜索小说 - 标签: {search_tags}，排除标签: {exclude_tags}")
+        logger.info(
+            f"Pixiv 插件：正在搜索小说 - 标签: {search_tags}，排除标签: {exclude_tags}"
+        )
 
         try:
             # 调用 Pixiv API 搜索小说
@@ -1166,6 +1185,137 @@ class PixivSearchPlugin(Star):
         except Exception as e:
             logger.error(f"Pixiv 插件：搜索小说时发生错误 - {e}")
             yield event.plain_result(f"搜索小说时发生错误: {str(e)}")
+
+    def create_pdf_from_text(self, title: str, text: str) -> bytes:
+        """使用 fpdf2 将文本转换为 PDF 字节流"""
+        if not self.font_path.exists():
+            logger.error(f"字体文件不存在，无法创建PDF: {self.font_path}")
+            raise FileNotFoundError(f"字体文件不存在: {self.font_path}")
+
+        pdf = FPDF()
+        pdf.add_page()
+
+        # 添加并使用我们自己下载的字体
+        pdf.add_font("SmileySans", "", str(self.font_path), uni=True)
+        pdf.set_font("SmileySans", size=20)
+
+        # 添加标题
+        pdf.multi_cell(0, 10, title, align="C")
+        pdf.ln(10)
+
+        # 设置正文样式
+        pdf.set_font_size(12)
+        
+        # 添加正文
+        pdf.multi_cell(0, 10, text)
+
+        # 返回 PDF 内容的字节
+        # pdf.output() with a unicode font returns a bytearray, which is what we need.
+        return pdf.output(dest='S')
+
+    @command("pixiv_novel_download")
+    async def pixiv_novel_download(self, event: AstrMessageEvent, novel_id: str = ""):
+        """根据ID下载Pixiv小说为pdf文件"""
+        cleaned_id = novel_id.strip()
+        if not cleaned_id or not cleaned_id.isdigit():
+            yield event.plain_result("请输入有效的小说ID。用法: /pixiv_novel_download <小说ID>")
+            return
+
+        if not await self._authenticate():
+            yield event.plain_result(self.AUTH_ERROR_MSG)
+            return
+
+        logger.info(f"Pixiv 插件：正在准备下载小说并转换为PDF - ID: {cleaned_id}")
+
+        try:
+
+            # 获取小说详情和内容
+            novel_detail_result = await asyncio.to_thread(self.client.novel_detail, cleaned_id)
+            if not novel_detail_result or not novel_detail_result.novel:
+                yield event.plain_result(f"未找到ID为 {cleaned_id} 的小说。")
+                return
+            novel_title = novel_detail_result.novel.title
+
+            novel_content_result = await asyncio.to_thread(self.client.webview_novel, cleaned_id)
+            if not novel_content_result or not hasattr(novel_content_result, "text"):
+                yield event.plain_result(f"无法获取ID为 {cleaned_id} 的小说内容。")
+                return
+            novel_text = novel_content_result.text
+
+            # 生成 PDF 字节流
+            pdf_bytes = self.create_pdf_from_text(novel_title, novel_text)
+            logger.info(f"Pixiv 插件：小说内容已成功转换为 PDF 字节流。")
+
+            # 清理文件名
+            safe_title = "".join(c for c in novel_title if c.isalnum() or c in (" ", "_")).rstrip()
+            if not safe_title:
+                safe_title = "novel"
+            file_name = f"{safe_title}_{cleaned_id}.pdf"
+
+            # --- PDF 内存加密逻辑 ---
+            password = hashlib.md5(cleaned_id.encode()).hexdigest()
+            final_pdf_bytes = None
+            password_notice = ""
+            
+            try:
+                from PyPDF2 import PdfReader, PdfWriter
+
+                reader = PdfReader(io.BytesIO(pdf_bytes))
+                writer = PdfWriter()
+                for page in reader.pages:
+                    writer.add_page(page)
+                writer.encrypt(password)
+                
+                # Use an in-memory stream to hold the encrypted PDF
+                with io.BytesIO() as bytes_stream:
+                    writer.write(bytes_stream)
+                    final_pdf_bytes = bytes_stream.getvalue()
+                
+                logger.info("Pixiv 插件：PDF 已成功在内存中加密。")
+                password_notice = f"PDF已加密，密码为小说ID的MD5值: {password}"
+
+            except ImportError:
+                logger.warning("PyPDF2 未安装，无法加密PDF。将发送未加密的文件。")
+                final_pdf_bytes = pdf_bytes # Fallback to unencrypted
+                password_notice = "【注意】PyPDF2库未安装，本次发送的PDF未加密。"
+
+            # 将文件内容编码为 Base64 URI
+            file_base64 = base64.b64encode(final_pdf_bytes).decode('utf-8')
+            base64_uri = f"base64://{file_base64}"
+            
+            logger.info(f"Pixiv 插件：PDF 内容已编码为 Base64，准备发送。")
+
+            # --- 文件发送逻辑 ---
+            # 检查平台并发送文件
+            if event.get_platform_name() == "aiocqhttp" and event.get_group_id():
+                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                if isinstance(event, AiocqhttpMessageEvent):
+                    client = event.bot
+                    group_id = event.get_group_id()
+                    try:
+                        logger.info(f"Pixiv 插件：使用 aiocqhttp API (Base64) 上传群文件 {file_name} 到群组 {group_id}")
+                        await client.upload_group_file(group_id=group_id, file=base64_uri, name=file_name)
+                        logger.info(f"Pixiv 插件：成功调用 aiocqhttp API (Base64) 发送PDF。")
+                        # 发送密码提示
+                        if password_notice:
+                            yield event.plain_result(password_notice)
+                        return
+                    except Exception as api_e:
+                        logger.error(f"Pixiv 插件：调用 aiocqhttp API (Base64) 发送文件失败: {api_e}")
+                        yield event.plain_result(f"通过高速接口发送文件失败: {api_e}。请联系管理员检查后端配置。")
+                        return
+
+            logger.info("非 aiocqhttp 平台或私聊，尝试使用标准 File 组件 (Base64) 发送。")
+            yield event.chain_result([File(name=file_name, file=base64_uri)])
+            if password_notice:
+                yield event.plain_result(password_notice)
+
+        except FileNotFoundError as e:
+            logger.error(f"无法生成PDF: {e}")
+            yield event.plain_result(f"无法生成PDF：所需的中文字体文件下载失败或不存在。请检查网络连接或联系管理员。")
+        except Exception as e:
+            logger.error(f"Pixiv 插件：下载或转换小说为PDF时发生错误 - {e}")
+            yield event.plain_result(f"处理小说时发生错误: {str(e)}")
 
     @command("pixiv_trending_tags")
     async def pixiv_trending_tags(self, event: AstrMessageEvent):
@@ -1875,11 +2025,13 @@ class PixivSearchPlugin(Star):
                 logger.info("Pixiv Token 刷新任务已成功取消。")
             except Exception as e:
                 logger.error(f"等待 Pixiv Token 刷新任务取消时发生错误: {e}")
+        
+
         logger.info("Pixiv 搜索插件已停用。")
         # 关闭HTTP会话
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
-        pass
+
 
     async def _get_http_session(self):
         if self._http_session is None or self._http_session.closed:
