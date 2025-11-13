@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Callable
 import random
 
-# R18 与 AI Badwords List
+# R18 与 AI 敏感词列表
 R18_BADWORDS = [s.lower() for s in ["R-18", "R18", "R-18G", "R18G", "R18+", "R18+G"]]
 AI_BADWORDS = [s.lower() for s in ["AI", "AI生成", "AI-generated", "AI辅助"]]
 

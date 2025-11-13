@@ -795,7 +795,6 @@ class PixivSearchPlugin(Star):
         pdf.multi_cell(0, 10, text)
 
         # 返回 PDF 内容的字节
-        # pdf.output() with a unicode font returns a bytearray, which is what we need.
         return pdf.output(dest='S')
 
     @command("pixiv_novel_download")
@@ -851,7 +850,7 @@ class PixivSearchPlugin(Star):
                     writer.add_page(page)
                 writer.encrypt(password)
                 
-                # Use an in-memory stream to hold the encrypted PDF
+                # 使用内存流保存加密后的PDF
                 with io.BytesIO() as bytes_stream:
                     writer.write(bytes_stream)
                     final_pdf_bytes = bytes_stream.getvalue()
@@ -861,7 +860,7 @@ class PixivSearchPlugin(Star):
 
             except ImportError:
                 logger.warning("PyPDF2 未安装，无法加密PDF。将发送未加密的文件。")
-                final_pdf_bytes = pdf_bytes  # Fallback to unencrypted
+                final_pdf_bytes = pdf_bytes  # 回退到未加密版本
                 password_notice = "【注意】PyPDF2库未安装，本次发送的PDF未加密。"
 
             # 将文件内容编码为 Base64 URI
@@ -870,7 +869,6 @@ class PixivSearchPlugin(Star):
             
             logger.info("Pixiv 插件：PDF 内容已编码为 Base64，准备发送。")
 
-            # --- 文件发送逻辑 ---
             # 检查平台并发送文件
             if event.get_platform_name() == "aiocqhttp" and event.get_group_id():
                 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
@@ -1348,7 +1346,7 @@ class PixivSearchPlugin(Star):
                 filtered_illusts[0],
                 detail_message,
                 show_details=self.pixiv_config.show_details,
-                send_all_pages=True,  # Send all pages for specific illust
+                send_all_pages=True,  # 发送特定作品的所有页面
             ):
                 yield result
 
