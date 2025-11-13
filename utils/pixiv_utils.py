@@ -73,7 +73,7 @@ def build_ugoira_info_message(illust, metadata, gif_info, detail_message: str = 
     Returns:
         构建好的动图信息消息
     """
-    ugoira_info = "🎬 动图作品（已转换为GIF）\n"
+    ugoira_info = "🎬 动图作品\n"
     ugoira_info += f"标题: {illust.title}\n"
     ugoira_info += f"作者: {illust.user.name}\n"
     ugoira_info += f"帧数: {len(metadata.frames)}\n"
@@ -89,7 +89,6 @@ def build_ugoira_info_message(illust, metadata, gif_info, detail_message: str = 
                 break
     
     ugoira_info += f"作品链接: https://www.pixiv.net/artworks/{illust.id}\n\n"
-    ugoira_info += "💡 动图已转换为GIF格式，可以直接播放。"
     
     return ugoira_info
 
@@ -322,7 +321,7 @@ async def send_ugoira(client: AppPixivAPI, event: Any, illust, detail_message: s
                 ])
                 
                 # 2. 如果是群聊，再尝试上传为群文件
-                if event.get_platform_name() == "aiocqhttp" and event.get_group_id():
+                if _config.is_fromfilesystem and event.get_platform_name() == "aiocqhttp" and event.get_group_id():
                     try:
                         from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
                         if isinstance(event, AiocqhttpMessageEvent):
@@ -338,7 +337,6 @@ async def send_ugoira(client: AppPixivAPI, event: Any, illust, detail_message: s
                             logger.info(f"Pixiv 插件：尝试上传GIF到群文件 {file_name} - ID: {illust.id}")
                             await client_bot.upload_group_file(group_id=group_id, file=base64_uri, name=file_name)
                             logger.info(f"Pixiv 插件：成功上传GIF到群文件 - ID: {illust.id}")
-                            yield event.plain_result(f"✅ 动图已同时上传为群文件: {file_name}")
                     except Exception as e:
                         logger.error(f"Pixiv 插件：上传群文件失败 - {e}")
                         # 群文件上传失败不影响主流程，不显示错误给用户
