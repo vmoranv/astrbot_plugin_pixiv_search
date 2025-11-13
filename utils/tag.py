@@ -3,12 +3,13 @@ tag.py
 统一Pixiv标签格式化、详情信息构建与R18/AI过滤工具模块
 """
 
+from dataclasses import dataclass
+from typing import List, Optional, Callable
+import random
+
 # R18 与 AI Badwords List
 R18_BADWORDS = [s.lower() for s in ["R-18", "R18", "R-18G", "R18G", "R18+", "R18+G"]]
 AI_BADWORDS = [s.lower() for s in ["AI", "AI生成", "AI-generated", "AI辅助"]]
-
-from dataclasses import dataclass
-from typing import List, Optional, Callable
 
 @dataclass
 class FilterConfig:
@@ -22,6 +23,8 @@ class FilterConfig:
     logger: Optional[Callable] = None
     show_filter_result: bool = True
     excluded_tags: Optional[List[str]] = None
+    forward_threshold: int = 5
+    show_details: bool = True
 
 def is_r18(item):
     """检查作品是否为R18内容"""
@@ -51,6 +54,10 @@ def is_ai(item):
                     lname.startswith(f"{bad} ") or lname.endswith(f" {bad}"))):
                 return True
     return False
+
+def is_ugoira(item):
+    """检查作品是否为动图（ugoira）"""
+    return getattr(item, "type", None) == "ugoira"
 
 def _apply_filters(item, config: FilterConfig) -> bool:
     """应用所有过滤条件"""
@@ -250,3 +257,185 @@ def has_excluded_tags(item, excluded_tags):
             if any(excluded_tag in lname for excluded_tag in excluded_tags):
                 return True
     return False
+
+async def process_and_send_illusts(
+    initial_illusts,
+    config: FilterConfig,
+    client,
+    event,
+    build_detail_message_func,
+    send_pixiv_image_func,
+    send_forward_message_func,
+    is_novel=False
+):
+    """
+    统一处理作品过滤和发送的逻辑
+    
+    Args:
+        initial_illusts: 初始作品列表
+        config: 过滤配置
+        client: Pixiv API 客户端
+        event: 消息事件
+        build_detail_message_func: 构建详情消息的函数
+        send_pixiv_image_func: 发送图片的函数
+        send_forward_message_func: 发送转发消息的函数
+        is_novel: 是否为小说（默认为False）
+    
+    Returns:
+        AsyncGenerator: 生成发送结果
+    """
+    # 应用过滤
+    filtered_illusts, filter_msgs = filter_illusts_with_reason(initial_illusts, config)
+    
+    # 发送过滤消息
+    if config.show_filter_result:
+        for msg in filter_msgs:
+            yield event.plain_result(msg)
+    
+    if not filtered_illusts:
+        # 如果没有符合条件的作品，发送一个提示消息
+        if config.show_filter_result:
+            # 如果显示过滤结果，但过滤消息为空，发送一个默认消息
+            if not filter_msgs:
+                yield event.plain_result("筛选后没有符合条件的作品可发送。")
+        else:
+            # 如果不显示过滤结果，直接发送一个简单的提示消息
+            yield event.plain_result("没有找到符合条件的作品。")
+        return
+    
+    # 随机选择作品
+    illusts_to_send = sample_illusts(filtered_illusts, config.return_count, shuffle=True)
+    
+    if not illusts_to_send:
+        return
+    
+    # 根据数量决定发送方式
+    if len(illusts_to_send) > config.forward_threshold:
+        async for result in send_forward_message_func(
+            client,
+            event,
+            illusts_to_send,
+            lambda illust: build_detail_message_func(illust, is_novel=is_novel),
+        ):
+            yield result
+    else:
+        for illust in illusts_to_send:
+            detail_message = build_detail_message_func(illust, is_novel=is_novel)
+            async for result in send_pixiv_image_func(
+                client, event, illust, detail_message, show_details=config.show_details
+            ):
+                yield result
+
+def parse_tags_with_exclusion(tags_str):
+    """
+    解析标签字符串，分离包含标签和排除标签
+    
+    Args:
+        tags_str: 标签字符串，如 "萝莉,-R18,可爱"
+        
+    Returns:
+        tuple: (包含标签列表, 排除标签列表, 冲突标签列表)
+    """
+    if not tags_str:
+        return [], [], []
+        
+    all_tags = [tag.strip() for tag in tags_str.replace("，", ",").split(",") if tag.strip()]
+    include_tags = []
+    exclude_tags = []
+    
+    for tag in all_tags:
+        if tag.startswith("-"):
+            exclude_tags.append(tag[1:].lower())
+        else:
+            include_tags.append(tag)
+    
+    # 检查冲突标签
+    include_tags_lower = [tag.lower() for tag in include_tags]
+    conflict_tags = []
+    
+    for exclude_tag in exclude_tags:
+        if exclude_tag in include_tags_lower:
+            conflict_tags.append(exclude_tag)
+    
+    return include_tags, exclude_tags, conflict_tags
+
+def validate_and_process_tags(cleaned_tags):
+    """
+    验证和处理标签，返回处理结果或错误消息
+    
+    Args:
+        cleaned_tags: 清理后的标签字符串
+        
+    Returns:
+        dict: 包含处理结果的字典，格式为:
+            {
+                'success': bool,  # 是否成功
+                'error_message': str,  # 错误消息（如果有）
+                'include_tags': list,  # 包含标签列表
+                'exclude_tags': list,  # 排除标签列表
+                'search_tags': str,  # 搜索标签字符串
+                'display_tags': str  # 显示标签字符串
+            }
+    """
+    # 解析包含和排除标签，检查冲突
+    include_tags, exclude_tags, conflict_tags = parse_tags_with_exclusion(cleaned_tags)
+    
+    # 检查是否存在冲突标签
+    if conflict_tags:
+        conflict_list = "、".join(conflict_tags)
+        return {
+            'success': False,
+            'error_message': f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n你药剂把干啥",
+            'include_tags': [],
+            'exclude_tags': [],
+            'search_tags': '',
+            'display_tags': cleaned_tags
+        }
+    
+    if not include_tags:
+        return {
+            'success': False,
+            'error_message': "请至少提供一个包含标签（不以 - 开头的标签）。",
+            'include_tags': [],
+            'exclude_tags': [],
+            'search_tags': '',
+            'display_tags': cleaned_tags
+        }
+    
+    # 使用包含标签进行搜索
+    search_tags = ",".join(include_tags)
+    display_tags = cleaned_tags
+    
+    return {
+        'success': True,
+        'error_message': '',
+        'include_tags': include_tags,
+        'exclude_tags': exclude_tags,
+        'search_tags': search_tags,
+        'display_tags': display_tags
+    }
+
+def sample_illusts(illusts, count, shuffle=False):
+    """
+    从作品列表中随机选择指定数量的作品
+    
+    Args:
+        illusts: 作品列表
+        count: 要选择的数量
+        shuffle: 是否先打乱顺序再选择（默认为False）
+        
+    Returns:
+        list: 随机选择的作品列表
+    """
+    if not illusts:
+        return []
+    
+    count_to_send = min(len(illusts), count)
+    if count_to_send > 0:
+        if shuffle:
+            random.shuffle(illusts)
+            return illusts[:count_to_send]
+        else:
+            return random.sample(illusts, count_to_send)
+    else:
+        return []

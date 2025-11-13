@@ -1,16 +1,15 @@
 import peewee as pw
 from astrbot.api import logger
-import os
-import json
+from astrbot.api.star import StarTools
+from pathlib import Path
 
-# 获取插件数据目录
-data_dir = os.path.join(os.path.dirname(__file__), "data")
-if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
+# 使用 StarTools 获取标准数据目录
+data_dir = StarTools.get_data_dir("pixiv_search")
+data_dir.mkdir(parents=True, exist_ok=True)
 
 # 数据库文件路径
-db_path = os.path.join(data_dir, "subscriptions.db")
-db = pw.SqliteDatabase(db_path)
+db_path = data_dir / "subscriptions.db"
+db = pw.SqliteDatabase(str(db_path))
 
 class BaseModel(pw.Model):
     class Meta:
@@ -36,7 +35,7 @@ def initialize_database():
             db.create_tables([Subscription])
             logger.info("数据库初始化成功，数据表已创建。")
         # 兼容旧版，检查并添加 chat_id 列
-        elif not 'chat_id' in [c.name for c in db.get_columns('subscription')]:
+        elif 'chat_id' not in [c.name for c in db.get_columns('subscription')]:
              logger.info("正在更新数据库表结构，添加 chat_id 列...")
              db.evolve(
                  pw.SQL('ALTER TABLE subscription ADD COLUMN chat_id VARCHAR(255) DEFAULT ""')
@@ -66,7 +65,7 @@ def add_subscription(chat_id: str, session_id_json: str, sub_type: str, target_i
             Subscription.create(
                 chat_id=chat_id,
                 session_id=session_id_json,
-                sub_type='artist', # 硬编码为 artist
+                sub_type=sub_type,
                 target_id=target_id,
                 target_name=target_name or target_id,
                 last_notified_illust_id=initial_illust_id
@@ -92,7 +91,7 @@ def remove_subscription(chat_id: str, sub_type: str, target_id: str) -> (bool, s
     try:
         query = Subscription.delete().where(
             (Subscription.chat_id == chat_id) &
-            (Subscription.sub_type == 'artist') &
+            (Subscription.sub_type == sub_type) &
             (Subscription.target_id == target_id)
         )
         deleted_rows = query.execute()

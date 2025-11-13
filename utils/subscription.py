@@ -1,9 +1,5 @@
 import asyncio
-import json
-import os
 from datetime import datetime, timedelta
-from types import SimpleNamespace
-from typing import Dict, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from astrbot.api import logger
 from pixivpy3 import AppPixivAPI
@@ -27,7 +23,6 @@ class SubscriptionService:
                 next_run_time=datetime.now() + timedelta(seconds=10) # 10秒后第一次运行
             )
             self.scheduler.start()
-            logger.info("订阅检查服务已启动。")
 
     def stop(self):
         """停止后台任务"""
@@ -43,7 +38,6 @@ class SubscriptionService:
 
         subscriptions = get_all_subscriptions()
         if not subscriptions:
-            logger.info("当前没有订阅任务。")
             return
 
         for sub in subscriptions:
@@ -56,7 +50,6 @@ class SubscriptionService:
 
     async def check_artist_updates(self, sub):
         """检查画师更新"""
-        logger.info(f"正在检查画师 {sub.target_name} ({sub.target_id}) 的更新...")
         api: AppPixivAPI = self.plugin.client
         json_result = await asyncio.to_thread(api.user_illusts, sub.target_id)
 
@@ -72,7 +65,6 @@ class SubscriptionService:
         
         if new_illusts:
             new_illusts.reverse()
-            logger.info(f"画师 {sub.target_name} ({sub.target_id}) 有 {len(new_illusts)} 个新作品。") 
             latest_id = new_illusts[-1].id
             update_last_notified_id(sub.chat_id, sub.sub_type, sub.target_id, latest_id)
 

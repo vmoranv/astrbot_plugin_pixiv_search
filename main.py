@@ -1,11 +1,6 @@
 import asyncio
-import random
 from typing import Dict, Any
 import aiohttp
-import aiofiles
-import uuid
-import os
-import json
 import hashlib
 import io
 import base64
@@ -15,15 +10,15 @@ from fpdf import FPDF
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
-from astrbot.api.message_components import Image, Plain, Node, Nodes, File
+from astrbot.api.message_components import File
 from astrbot.api.all import command
 from pixivpy3 import AppPixivAPI, PixivError
 
-from .config import clean_temp_dir, smart_clean_temp_dir
-from .tag import build_detail_message, filter_illusts_with_reason, FilterConfig
-from .database import initialize_database, add_subscription, remove_subscription, list_subscriptions
-from .subscription import SubscriptionService
-
+from .utils.tag import build_detail_message, FilterConfig, validate_and_process_tags, process_and_send_illusts, sample_illusts
+from .utils.database import initialize_database, add_subscription, remove_subscription, list_subscriptions
+from .utils.subscription import SubscriptionService
+from .utils.pixiv_utils import init_pixiv_utils, filter_items, send_pixiv_image, send_forward_message
+from .utils.help import init_help_manager, get_help_message
 
 @register(
     "pixiv_search",
@@ -46,124 +41,55 @@ class PixivSearchPlugin(Star):
         """初始化 Pixiv 插件"""
         super().__init__(context)
         self.config = config
+
+        # 初始化配置管理器
+        from .utils.config import PixivConfig, PixivConfigManager
+        self.pixiv_config = PixivConfig(self.config)
+        self.config_manager = PixivConfigManager(self.pixiv_config)
+        
+        # 初始化其他依赖配置的属性
+        self.client = AppPixivAPI(**self.pixiv_config.get_requests_kwargs())
+        self._refresh_task: asyncio.Task = None
+        self._http_session = None
+        self.sub_service = None
         
         # 使用 StarTools 获取标准数据目录
         data_dir = StarTools.get_data_dir("pixiv_search")
         self.temp_dir = data_dir / "temp"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-
-        self.proxy = self.config.get("proxy", "")
-        requests_kwargs = {}
-        if self.proxy:
-            requests_kwargs['proxies'] = {'http': self.proxy, 'https': self.proxy}
         
-        self.client = AppPixivAPI(**requests_kwargs)
-        self.refresh_token = self.config.get("refresh_token", None)
-        self.return_count = self.config.get("return_count", 1)
-        self.r18_mode = self.config.get("r18_mode", "过滤 R18")
-        self.ai_filter_mode = self.config.get("ai_filter_mode", "过滤 AI 作品")
-        self.show_filter_result = self.config.get("show_filter_result", True)
-        self.show_details = self.config.get("show_details", True)
-        self.deep_search_depth = self.config.get("deep_search_depth", 3)
-        self.forward_threshold = self.config.get("forward_threshold", 5)
-        self.is_fromfilesystem = self.config.get("is_fromfilesystem", True)
-        self.image_quality = self.config.get("image_quality", "original")
-        self.refresh_interval = self.config.get("refresh_token_interval_minutes", 720)
-        self.subscription_enabled = self.config.get("subscription_enabled", True)
-        self.subscription_check_interval_minutes = self.config.get("subscription_check_interval_minutes", 30)
-        self._refresh_task: asyncio.Task = None
-        self._http_session = None
-        self.sub_service = None
+        # 初始化 PixivUtils 模块
+        init_pixiv_utils(self.client, self.pixiv_config, self.temp_dir)
 
         # 字体相关初始化
-        # 直接使用插件目录下的本地字体文件
-        self.font_path = Path(__file__).parent / "SmileySans-Oblique.ttf"
-
-        self.AUTH_ERROR_MSG = (
-            "Pixiv API 认证失败，请检查配置中的凭据信息。\n"
-            "先带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy);\n"
-            "再填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 "
-            "[pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。"
-        )
+        # 使用项目相对路径下的字体文件
+        self.font_path = Path(__file__).parent / "data" / "SmileySans-Oblique.ttf"
+        
+        # 初始化帮助消息管理器
+        init_help_manager(data_dir)
+        
         
         # 初始化数据库
         initialize_database()
 
         # 记录初始化信息
-        logger.info(
-            f"Pixiv 插件配置加载：refresh_token={'已设置' if self.refresh_token else '未设置'}, "
-            f"return_count={self.return_count}, r18_mode='{self.r18_mode}', "
-            f"ai_filter_mode='{self.ai_filter_mode}', show_details={self.show_details}, "
-            f"refresh_interval={self.refresh_interval} 分钟, "
-            f"subscription_enabled={self.subscription_enabled}, "
-            f"proxy='{self.proxy or '未使用'}'"
-        )
+        logger.info(f"Pixiv 插件配置加载：{self.pixiv_config.get_config_info()}")
 
         # 启动后台刷新任务
-        if self.refresh_interval > 0:
+        if self.pixiv_config.refresh_interval > 0:
             self._refresh_task = asyncio.create_task(self._periodic_token_refresh())
             logger.info(
-                f"Pixiv 插件：已启动 Refresh Token 自动刷新任务，间隔 {self.refresh_interval} 分钟。"
+                f"Pixiv 插件：已启动 Refresh Token 自动刷新任务，间隔 {self.pixiv_config.refresh_interval} 分钟。"
             )
         else:
             logger.info("Pixiv 插件：Refresh Token 自动刷新已禁用。")
 
         # 启动订阅服务
-        if self.subscription_enabled:
+        if self.pixiv_config.subscription_enabled:
             self.sub_service = SubscriptionService(self)
             self.sub_service.start()
         else:
             logger.info("Pixiv 插件：订阅功能已禁用。")
-
-    def parse_tags_with_exclusion(self, tags_str):
-        """
-        解析标签字符串，分离包含标签和排除标签
-        
-        Args:
-            tags_str: 标签字符串，如 "萝莉,-R18,可爱"
-            
-        Returns:
-            tuple: (包含标签列表, 排除标签列表, 冲突标签列表)
-        """
-        if not tags_str:
-            return [], [], []
-            
-        all_tags = [tag.strip() for tag in tags_str.replace("，", ",").split(",") if tag.strip()]
-        include_tags = []
-        exclude_tags = []
-        
-        for tag in all_tags:
-            if tag.startswith("-"):
-                exclude_tags.append(tag[1:].lower())
-            else:
-                include_tags.append(tag)
-        
-        # 检查冲突标签
-        include_tags_lower = [tag.lower() for tag in include_tags]
-        conflict_tags = []
-        
-        for exclude_tag in exclude_tags:
-            if exclude_tag in include_tags_lower:
-                conflict_tags.append(exclude_tag)
-        
-        return include_tags, exclude_tags, conflict_tags
-
-    def filter_items(self, items, tag_label, excluded_tags=None):
-        """
-        统一过滤插画/小说的辅助方法，只需传入待过滤对象和标签描述。
-        其他参数自动使用插件全局配置。
-        """
-        config = FilterConfig(
-            r18_mode=self.r18_mode,
-            ai_filter_mode=self.ai_filter_mode,
-            display_tag_str=tag_label,
-            return_count=self.return_count,
-            logger=logger,
-            show_filter_result=self.show_filter_result,
-            excluded_tags=excluded_tags or []
-        )
-        
-        return filter_illusts_with_reason(items, config)
 
     @staticmethod
     def info() -> Dict[str, Any]:
@@ -179,12 +105,10 @@ class PixivSearchPlugin(Star):
     async def _authenticate(self) -> bool:
         """尝试使用配置的凭据进行 Pixiv API 认证"""
         # 每次调用都尝试认证，让 pixivpy3 处理 token 状态
-        logger.info("Pixiv 插件：尝试进行 Pixiv API 认证/状态检查...")
         try:
-            if self.refresh_token:
+            if self.pixiv_config.refresh_token:
                 # 调用 auth()，pixivpy3 会在需要时刷新 token
-                await asyncio.to_thread(self.client.auth, refresh_token=self.refresh_token)
-                logger.info("Pixiv 插件：认证状态检查/刷新完成。")
+                await asyncio.to_thread(self.client.auth, refresh_token=self.pixiv_config.refresh_token)
                 return True
             else:
                 logger.error("Pixiv 插件：未提供有效的 Refresh Token，无法进行认证。")
@@ -195,158 +119,6 @@ class PixivSearchPlugin(Star):
                 f"Pixiv 插件：认证/刷新时发生错误 - 异常类型: {type(e)}, 错误信息: {e}"
             )
             return False
-
-    async def send_pixiv_image(
-        self,
-        event: AstrMessageEvent,
-        illust,
-        detail_message: str = None,
-        show_details: bool = True,
-        send_all_pages: bool = False,
-    ):
-        """
-        通用Pixiv图片下载与发送函数。
-        根据`send_all_pages`参数决定是发送多页作品的所有页面还是仅发送第一页。
-        自动选择最佳图片链接（original>large>medium），采用本地文件缓存，自动清理缓存目录，发送后删除临时文件。
-        """
-        await smart_clean_temp_dir(self.temp_dir, probability=0.1, max_files=20)
-
-        url_sources = []  # List of tuples: (url_object, detail_message_for_page)
-
-        # Helper class to unify URL structure for single-page illusts
-        class SinglePageUrls:
-            def __init__(self, illust):
-                self.original = getattr(
-                    illust.meta_single_page, "original_image_url", None
-                )
-                self.large = getattr(illust.image_urls, "large", None)
-                self.medium = getattr(illust.image_urls, "medium", None)
-
-        if send_all_pages and illust.page_count > 1:
-            for i, page in enumerate(illust.meta_pages):
-                page_detail = (
-                    f"Page {i + 1}/{illust.page_count}\n{detail_message or ''}"
-                )
-                # For multi-page, page.image_urls contains original, large, medium
-                url_sources.append((page.image_urls, page_detail))
-        else:
-            if illust.page_count > 1:
-                # First page of a multi-page work
-                url_obj = illust.meta_pages[0].image_urls
-            else:
-                # A single-page work
-                url_obj = SinglePageUrls(illust)
-            url_sources.append((url_obj, detail_message))
-
-        for url_obj, msg in url_sources:
-            quality_preference = ["original", "large", "medium"]
-            start_index = (
-                quality_preference.index(self.image_quality)
-                if self.image_quality in quality_preference
-                else 0
-            )
-            qualities_to_try = quality_preference[start_index:]
-
-            image_sent_for_source = False
-            for quality in qualities_to_try:
-                image_url = getattr(url_obj, quality, None)
-                if not image_url:
-                    continue
-
-                logger.info(f"Pixiv 插件：尝试发送图片，质量: {quality}, URL: {image_url}")
-                filename = self.temp_dir / f"pixiv_{uuid.uuid4().hex}.jpg"
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            image_url,
-                            headers={"Referer": "https://app-api.pixiv.net/"},
-                            proxy=self.proxy or None,
-                        ) as response:
-                            if response.status == 200:
-                                img_data = await response.read()
-                                async with aiofiles.open(filename, "wb") as f:
-                                    await f.write(img_data)
-
-                                if show_details and msg:
-                                    yield event.chain_result(
-                                        [Image.fromFileSystem(str(filename)), Plain(msg)]
-                                    )
-                                else:
-                                    yield event.chain_result(
-                                        [Image.fromFileSystem(str(filename))]
-                                    )
-
-                                image_sent_for_source = True
-                                break  # Success for this source, move to next source
-                            else:
-                                logger.warning(
-                                    f"Pixiv 插件：图片下载失败 (质量: {quality}), 状态码: {response.status}。尝试下一质量..."
-                                )
-                except Exception as e:
-                    logger.error(
-                        f"Pixiv 插件：图片下载异常 (质量: {quality}) - {e}。尝试下一质量..."
-                    )
-                finally:
-                    if filename.exists():
-                        try:
-                            # Use unlink for pathlib.Path object
-                            filename.unlink()
-                        except Exception as e:
-                            print(
-                                f"[PixivPlugin] 删除发送后临时图片失败: {filename}，原因: {e}"
-                            )
-
-            if not image_sent_for_source:
-                yield event.plain_result(f"图片下载失败，仅发送信息：\n{msg or ''}")
-
-    async def send_forward_message(self, event, images, build_detail_message_func):
-        """
-        直接下载图片并组装 nodes，避免不兼容消息类型。
-        """
-        batch_size = 10
-        nickname = "PixivBot"
-        await clean_temp_dir(self.temp_dir, max_files=20)
-        for i in range(0, len(images), batch_size):
-            batch_imgs = images[i : i + batch_size]
-            nodes_list = []
-            async with aiohttp.ClientSession() as session:
-                for img in batch_imgs:
-                    detail_message = build_detail_message_func(img)
-                    image_url = img.image_urls.medium
-                    headers = {
-                        "Referer": "https://www.pixiv.net/",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                    }
-                    node_content = []
-                    filename = self.temp_dir / f"pixiv_{uuid.uuid4().hex}.jpg"
-                    if image_url:
-                        try:
-                            async with session.get(image_url, headers=headers, proxy=self.proxy or None) as resp:
-                                if resp.status == 200:
-                                    img_data = await resp.read()
-                                    if self.is_fromfilesystem:
-                                        async with aiofiles.open(filename, "wb") as f:
-                                            await f.write(img_data)
-                                        node_content.append(
-                                            Image.fromFileSystem(str(filename))
-                                        )
-                                    else:
-                                        node_content.append(Image.fromBytes(img_data))
-                                else:
-                                    node_content.append(
-                                        Plain(f"图片下载失败: {image_url}")
-                                    )
-                        except Exception as e:
-                            node_content.append(Plain(f"图片下载异常: {e}"))
-                    else:
-                        node_content.append(Plain("未找到图片链接"))
-                    if self.show_details:
-                        node_content.append(Plain(detail_message))
-                    node = Node(name=nickname, content=node_content)
-                    nodes_list.append(node)
-            if nodes_list:
-                nodes_obj = Nodes(nodes=nodes_list)
-                yield event.chain_result([nodes_obj])
 
     @command("pixiv")
     async def pixiv(self, event: AstrMessageEvent, tags: str = ""):
@@ -361,34 +133,24 @@ class PixivSearchPlugin(Star):
         if not cleaned_tags:
             logger.info("Pixiv 插件：用户未提供搜索标签或标签为空，返回帮助信息。")
             yield event.plain_result(
-                "请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。\n" + self.AUTH_ERROR_MSG
+                "请输入要搜索的标签。使用 `/pixiv_help` 查看帮助。\n" + self.pixiv_config.get_auth_error_message()
             )
             return
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
-        # 解析包含和排除标签，检查冲突
-        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(cleaned_tags)
-        
-        # 检查是否存在冲突标签
-        if conflict_tags:
-            conflict_list = "、".join(conflict_tags)
-            yield event.plain_result(
-                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
-                f"你药剂把干啥"
-            )
+        # 使用统一的标签处理函数
+        tag_result = validate_and_process_tags(cleaned_tags)
+        if not tag_result['success']:
+            yield event.plain_result(tag_result['error_message'])
             return
         
-        if not include_tags:
-            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
-            return
-        
-        # 使用包含标签进行搜索
-        search_tags = ",".join(include_tags)
-        display_tags = cleaned_tags
+        exclude_tags = tag_result['exclude_tags']
+        search_tags = tag_result['search_tags']
+        display_tags = tag_result['display_tags']
 
         # 标签搜索处理
         logger.info(f"Pixiv 插件：正在搜索标签 - {search_tags}，排除标签 - {exclude_tags}")
@@ -405,43 +167,30 @@ class PixivSearchPlugin(Star):
                 yield event.plain_result("未找到相关插画。")
                 return
 
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(
-                initial_illusts, display_tags, excluded_tags=exclude_tags
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=display_tags,
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=exclude_tags or [],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_illusts:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            illusts_to_send = (
-                random.sample(filtered_illusts, count_to_send)
-                if count_to_send > 0
-                else []
-            )
-
-            if not illusts_to_send:
-                logger.info("没有符合条件的推荐插画可供发送。")
-                return
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,  # 传入所有初始作品，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：搜索插画时发生错误 - {e}")
@@ -450,7 +199,7 @@ class PixivSearchPlugin(Star):
     @command("pixiv_subscribe_add")
     async def pixiv_subscribe_add(self, event: AstrMessageEvent, artist_id: str = ""):
         """订阅画师"""
-        if not self.subscription_enabled:
+        if not self.pixiv_config.subscription_enabled:
             yield event.plain_result("订阅功能未启用。")
             return
 
@@ -467,7 +216,7 @@ class PixivSearchPlugin(Star):
         
         try:
             if not await self._authenticate():
-                yield event.plain_result(self.AUTH_ERROR_MSG)
+                yield event.plain_result(self.pixiv_config.get_auth_error_message())
                 return
             
             # 获取画师信息
@@ -499,7 +248,7 @@ class PixivSearchPlugin(Star):
     @command("pixiv_subscribe_remove")
     async def pixiv_subscribe_remove(self, event: AstrMessageEvent, artist_id: str = ""):
         """取消订阅画师"""
-        if not self.subscription_enabled:
+        if not self.pixiv_config.subscription_enabled:
             yield event.plain_result("订阅功能未启用。")
             return
 
@@ -516,7 +265,7 @@ class PixivSearchPlugin(Star):
     @command("pixiv_subscribe_list")
     async def pixiv_subscribe_list(self, event: AstrMessageEvent):
         """查看当前订阅列表"""
-        if not self.subscription_enabled:
+        if not self.pixiv_config.subscription_enabled:
             yield event.plain_result("订阅功能未启用。")
             return
 
@@ -536,61 +285,7 @@ class PixivSearchPlugin(Star):
     async def pixiv_help(self, event: AstrMessageEvent):
         """生成并返回帮助信息"""
 
-        help_text = """# Pixiv 搜索插件使用帮助
-
-## 基本命令
-- `/pixiv <标签1>,<标签2>,...` - 搜索含有任意指定标签的插画 (OR 搜索)
-- `/pixiv_help` - 显示此帮助信息
-
-## 排除标签
-- 使用 `-<标签>` 来排除特定标签。例如：`/pixiv 恋爱,-ntr`
-
-## 订阅功能
-- `/pixiv_subscribe_add <画师ID>` - 订阅画师
-- `/pixiv_subscribe_remove <画师ID>` - 取消订阅画师
-- `/pixiv_subscribe_list` - 查看当前订阅列表
-
-## 高级命令
-- `/pixiv_recommended` - 获取推荐作品
-- `/pixiv_specific <作品ID>` - 获取指定作品详情
-- `/pixiv_user_search <用户名>` - 搜索Pixiv用户
-- `/pixiv_user_detail <用户ID>` - 获取指定用户的详细信息
-- `/pixiv_user_illusts <用户ID>` - 获取指定用户的作品
-- `/pixiv_novel <标签1>,...` - 搜索小说
-- `/pixiv_novel_download <小说ID>` - 下载小说为 txt 文件
-- `/pixiv_ranking [mode] [date]` - 获取排行榜作品
-- `/pixiv_related <作品ID>` - 获取与指定作品相关的其他作品
-- `/pixiv_trending_tags` - 获取当前的插画趋势标签
-- `/pixiv_deepsearch <标签1>,<标签2>,...` - 深度搜索插画 (OR 搜索，跨多页)
-- `/pixiv_and <标签1>,<标签2>,...` - 深度搜索同时包含所有指定标签的插画 (AND 搜索，跨多页)
-
-## 配置信息
-- 当前 R18 模式: {r18_mode}
-- 当前返回数量: {return_count}
-- 当前 AI 作品模式: {ai_filter_mode}
-- 深度搜索翻页深度: {deep_search_depth} (-1 表示不限制)
-- 是否显示详细信息: {show_details}
-- 超过 {forward_threshold} 张时自动使用消息转发
-- 是否通过文件转发: {is_fromfilesystem}
-## 注意事项
-- OR 搜索 (如 /pixiv, /pixiv_deepsearch) 使用英文逗号(,)分隔标签
-- AND 搜索 (/pixiv_and) 使用英文逗号(,)分隔标签
-- 获取用户作品或相关作品时，ID必须为数字
-- 日期必须采用 YYYY-MM-DD 格式
-- 带脑子配置代理->[Astrbot代理配置教程](https://astrbot.app/config/astrbot-config.html#http-proxy)
-- 填入refresh_token->**Pixiv Refresh Token**: 必填，用于 API 认证。获取方法请参考 [pixivpy3 文档](https://pypi.org/project/pixivpy3/) 或[这里](https://gist.github.com/karakoo/5e7e0b1f3cc74cbcb7fce1c778d3709e)。
-- 使用 `/命令` 或 `/命令 help` 可获取每个命令的详细说明
-- 仔细看[README.md](https://github.com/vmoranv/astrbot_plugin_pixiv_search/blob/master/README.md)
-    """.format(
-            r18_mode=self.r18_mode,
-            return_count=self.return_count,
-            ai_filter_mode=self.ai_filter_mode,
-            deep_search_depth=self.deep_search_depth,
-            show_details=self.show_details,
-            forward_threshold=self.forward_threshold,
-            is_fromfilesystem=self.is_fromfilesystem,
-        )
-
+        help_text = get_help_message("pixiv_help", "帮助消息加载失败，请检查配置文件。")
         yield event.plain_result(help_text)
 
     @command("pixiv_recommended")
@@ -599,7 +294,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         logger.info("Pixiv 插件：获取推荐作品")
@@ -614,36 +309,30 @@ class PixivSearchPlugin(Star):
                 yield event.plain_result("未能获取到推荐作品。")
                 return
 
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(initial_illusts, "推荐")
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_illusts:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            if count_to_send > 0:
-                illusts_to_send = filtered_illusts[:count_to_send]
-            else:
-                illusts_to_send = []
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str="推荐",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
+            )
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：获取推荐作品时发生错误 - {e}")
@@ -656,22 +345,7 @@ class PixivSearchPlugin(Star):
 
         # 如果没有传入参数或者第一个参数是 'help'，显示帮助信息
         if not args_list or args_list[0].lower() == "help":
-            help_text = """# Pixiv 排行榜查询
-
-## 命令格式
-`/pixiv_ranking [mode] [date]`
-
-## 参数说明
-- `mode`: 排行榜模式，可选值：
-  - 常规模式: day, week, month, day_male, day_female, week_original, week_rookie, day_manga
-  - R18模式(需开启R18): day_r18, day_male_r18, day_female_r18, week_r18, week_r18g
-- `date`: 日期，格式为 YYYY-MM-DD，可选，默认为最新
-
-## 示例
-- `/pixiv_ranking week` - 获取每周排行榜
-- `/pixiv_ranking day 2023-05-01` - 获取2023年5月1日的每日排行榜
-- `/pixiv_ranking day_r18` - 获取R18每日排行榜（需开启R18模式）
-"""
+            help_text = get_help_message("pixiv_ranking", "排行榜帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
@@ -707,7 +381,7 @@ class PixivSearchPlugin(Star):
             try:
                 # 简单验证日期格式
                 year, month, day = date.split("-")
-                if not (len(year) == 4 and len(month) == 2 and len(day) == 2):
+                if len(year) != 4 or len(month) != 2 or len(day) != 2:
                     raise ValueError("日期格式不正确")
             except Exception:
                 yield event.plain_result(
@@ -716,7 +390,7 @@ class PixivSearchPlugin(Star):
                 return
 
         # 检查 R18 权限
-        if "r18" in mode and self.r18_mode == "过滤 R18":
+        if "r18" in mode and self.pixiv_config.r18_mode == "过滤 R18":
             yield event.plain_result(
                 "当前 R18 模式设置为「过滤 R18」，无法使用 R18 相关排行榜。"
             )
@@ -728,7 +402,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         try:
@@ -740,39 +414,30 @@ class PixivSearchPlugin(Star):
                 yield event.plain_result(f"未能获取到 {date} 的 {mode} 排行榜数据。")
                 return
 
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(
-                initial_illusts, f"排行榜:{mode}"
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"排行榜:{mode}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_illusts:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            illusts_to_send = (
-                random.sample(filtered_illusts, count_to_send)
-                if count_to_send > 0
-                else []
-            )
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,  # 传入所有初始作品，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：获取排行榜时发生错误 - {e}")
@@ -783,17 +448,7 @@ class PixivSearchPlugin(Star):
         """获取与指定作品相关的其他作品"""
         # 检查参数是否为空或为 help
         if not illust_id.strip() or illust_id.strip().lower() == "help":
-            help_text = """# Pixiv 相关作品
-
-## 命令格式
-`/pixiv_related <作品ID>`
-
-## 参数说明
-- `作品ID`: Pixiv 作品的数字ID
-
-## 示例
-- `/pixiv_related 12345678` - 获取ID为12345678的作品的相关作品
-"""
+            help_text = get_help_message("pixiv_related", "相关作品帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
@@ -804,7 +459,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         logger.info(f"Pixiv 插件：获取相关作品 - ID: {illust_id}")
@@ -817,39 +472,30 @@ class PixivSearchPlugin(Star):
                 yield event.plain_result(f"未能找到与作品 ID {illust_id} 相关的作品。")
                 return
 
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(
-                initial_illusts, f"相关:{illust_id}"
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"相关:{illust_id}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_illusts:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            illusts_to_send = (
-                random.sample(filtered_illusts, count_to_send)
-                if count_to_send > 0
-                else []
-            )
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,  # 传入所有初始作品，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：获取相关作品时发生错误 - {e}")
@@ -860,18 +506,7 @@ class PixivSearchPlugin(Star):
         """搜索 Pixiv 用户"""
         # 检查参数是否为空或为 help
         if not username.strip() or username.strip().lower() == "help":
-            help_text = """# Pixiv 用户搜索
-
-## 命令格式
-`/pixiv_user_search <用户名>`
-
-## 参数说明
-- `用户名`: 要搜索的 Pixiv 用户名
-
-## 示例
-- `/pixiv_user_search 初音ミク` - 搜索名称包含"初音ミク"的用户
-- `/pixiv_user_search gomzi` - 搜索名称包含"gomzi"的用户
-"""
+            help_text = get_help_message("pixiv_user_search", "用户搜索帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
@@ -879,7 +514,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         try:
@@ -909,10 +544,17 @@ class PixivSearchPlugin(Star):
                 if hasattr(user_preview, "illusts") and user_preview.illusts
                 else []
             )
-            filtered_illusts, filter_msgs = self.filter_items(
-                illusts, f"用户:{user.name}"
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"用户:{user.name}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[]
             )
-            if self.show_filter_result:
+            filtered_illusts, filter_msgs = filter_items(illusts, config)
+            if self.pixiv_config.show_filter_result:
                 for msg in filter_msgs:
                     yield event.plain_result(msg)
 
@@ -923,8 +565,8 @@ class PixivSearchPlugin(Star):
             if filtered_illusts:
                 illust = filtered_illusts[0]
                 detail_message = build_detail_message(illust, is_novel=False)
-                async for result in self.send_pixiv_image(
-                    event, illust, detail_message, show_details=self.show_details
+                async for result in send_pixiv_image(
+                    self.client, event, illust, detail_message, show_details=self.pixiv_config.show_details
                 ):
                     yield result
 
@@ -937,17 +579,7 @@ class PixivSearchPlugin(Star):
         """获取 Pixiv 用户详情"""
         # 检查参数是否为空或为 help
         if not user_id.strip() or user_id.strip().lower() == "help":
-            help_text = """# Pixiv 用户详情
-
-## 命令格式
-`/pixiv_user_detail <用户ID>`
-
-## 参数说明
-- `用户ID`: Pixiv 用户的数字ID
-
-## 示例
-- `/pixiv_user_detail 660788` - 获取ID为660788的用户详情
-"""
+            help_text = get_help_message("pixiv_user_detail", "用户详情帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
@@ -960,7 +592,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         try:
@@ -1004,17 +636,7 @@ class PixivSearchPlugin(Star):
         """获取指定用户的作品"""
         # 检查参数是否为空或为 help
         if not user_id.strip() or user_id.strip().lower() == "help":
-            help_text = """# Pixiv 用户作品
-
-## 命令格式
-`/pixiv_user_illusts <用户ID>`
-
-## 参数说明
-- `用户ID`: Pixiv 用户的数字ID
-
-## 示例
-- `/pixiv_user_illusts 660788` - 获取ID为660788的用户的作品
-"""
+            help_text = get_help_message("pixiv_user_illusts", "用户作品帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
@@ -1027,7 +649,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         try:
@@ -1051,45 +673,30 @@ class PixivSearchPlugin(Star):
                 )
                 return
 
-            # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(
-                initial_illusts, f"用户:{user_name}"
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"用户:{user_name}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_illusts:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            illusts_to_send = (
-                random.sample(filtered_illusts, count_to_send)
-                if count_to_send > 0
-                else []
-            )
-
-            # 发送选定的插画
-            if not illusts_to_send:
-                logger.info(f"用户 {user_id} 没有符合条件的插画可供发送。")
-                return
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    # 统一使用build_detail_message生成详情信息
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,  # 传入所有初始作品，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：获取用户作品时发生错误 - {e}")
@@ -1102,44 +709,24 @@ class PixivSearchPlugin(Star):
 
         # Handle help and empty cases
         if not cleaned_tags or cleaned_tags.lower() == "help":
-            help_text = """# Pixiv 小说搜索
-- **命令格式**: `/pixiv_novel <标签1>,<标签2>,...`
-- **参数说明**:
-  - `标签`: 搜索的标签，多个标签用英文逗号分隔
-  - 支持排除标签功能，使用 `-<标签>` 来排除特定标签
-- **示例**:
-  - `/pixiv_novel 恋愛` - 搜索标签为"恋愛"的小说
-  - `/pixiv_novel 恋愛,-NTR` - 搜索包含"恋愛"但排除"NTR"的小说
-"""
+            help_text = get_help_message("pixiv_novel", "小说搜索帮助消息加载失败，请检查配置文件。")
             yield event.plain_result(help_text)
             return
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
-        # 解析包含和排除标签，检查冲突
-        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(
-            cleaned_tags
-        )
-
-        # 检查是否存在冲突标签
-        if conflict_tags:
-            conflict_list = "、".join(conflict_tags)
-            yield event.plain_result(
-                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
-                f"你药剂把干啥"
-            )
+        # 使用统一的标签处理函数
+        tag_result = validate_and_process_tags(cleaned_tags)
+        if not tag_result['success']:
+            yield event.plain_result(tag_result['error_message'])
             return
-
-        if not include_tags:
-            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
-            return
-
-        # 使用包含标签进行搜索
-        search_tags = ",".join(include_tags)
-        display_tags = cleaned_tags
+        
+        exclude_tags = tag_result['exclude_tags']
+        search_tags = tag_result['search_tags']
+        display_tags = tag_result['display_tags']
 
         logger.info(
             f"Pixiv 插件：正在搜索小说 - 标签: {search_tags}，排除标签: {exclude_tags}"
@@ -1155,32 +742,30 @@ class PixivSearchPlugin(Star):
                 yield event.plain_result(f"未找到相关小说: {search_tags}")
                 return
 
-            # 应用排除标签过滤
-            filtered_novels, filter_msgs = self.filter_items(
-                initial_novels, display_tags, excluded_tags=exclude_tags
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=display_tags,
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=exclude_tags or [],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-            if not filtered_novels:
-                return
-
-            # 限制返回数量
-            count_to_send = min(len(filtered_novels), self.return_count)
-            novels_to_show = (
-                random.sample(filtered_novels, count_to_send)
-                if count_to_send > 0
-                else []
-            )
-
-            # 返回结果
-            if not novels_to_show:
-                logger.info("没有符合条件的小说可供发送。")
-
-            for novel in novels_to_show:
-                # 统一使用build_detail_message生成详情信息
-                detail_message = build_detail_message(novel, is_novel=True)
-                yield event.plain_result(detail_message)
+            
+            async for result in process_and_send_illusts(
+                initial_novels,  # 传入所有初始小说，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=True
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：搜索小说时发生错误 - {e}")
@@ -1222,7 +807,7 @@ class PixivSearchPlugin(Star):
             return
 
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         logger.info(f"Pixiv 插件：正在准备下载小说并转换为PDF - ID: {cleaned_id}")
@@ -1244,7 +829,7 @@ class PixivSearchPlugin(Star):
 
             # 生成 PDF 字节流
             pdf_bytes = self.create_pdf_from_text(novel_title, novel_text)
-            logger.info(f"Pixiv 插件：小说内容已成功转换为 PDF 字节流。")
+            logger.info("Pixiv 插件：小说内容已成功转换为 PDF 字节流。")
 
             # 清理文件名
             safe_title = "".join(c for c in novel_title if c.isalnum() or c in (" ", "_")).rstrip()
@@ -1276,14 +861,14 @@ class PixivSearchPlugin(Star):
 
             except ImportError:
                 logger.warning("PyPDF2 未安装，无法加密PDF。将发送未加密的文件。")
-                final_pdf_bytes = pdf_bytes # Fallback to unencrypted
+                final_pdf_bytes = pdf_bytes  # Fallback to unencrypted
                 password_notice = "【注意】PyPDF2库未安装，本次发送的PDF未加密。"
 
             # 将文件内容编码为 Base64 URI
             file_base64 = base64.b64encode(final_pdf_bytes).decode('utf-8')
             base64_uri = f"base64://{file_base64}"
             
-            logger.info(f"Pixiv 插件：PDF 内容已编码为 Base64，准备发送。")
+            logger.info("Pixiv 插件：PDF 内容已编码为 Base64，准备发送。")
 
             # --- 文件发送逻辑 ---
             # 检查平台并发送文件
@@ -1295,7 +880,7 @@ class PixivSearchPlugin(Star):
                     try:
                         logger.info(f"Pixiv 插件：使用 aiocqhttp API (Base64) 上传群文件 {file_name} 到群组 {group_id}")
                         await client.upload_group_file(group_id=group_id, file=base64_uri, name=file_name)
-                        logger.info(f"Pixiv 插件：成功调用 aiocqhttp API (Base64) 发送PDF。")
+                        logger.info("Pixiv 插件：成功调用 aiocqhttp API (Base64) 发送PDF。")
                         # 发送密码提示
                         if password_notice:
                             yield event.plain_result(password_notice)
@@ -1312,7 +897,7 @@ class PixivSearchPlugin(Star):
 
         except FileNotFoundError as e:
             logger.error(f"无法生成PDF: {e}")
-            yield event.plain_result(f"无法生成PDF：所需的中文字体文件下载失败或不存在。请检查网络连接或联系管理员。")
+            yield event.plain_result("无法生成PDF：所需的中文字体文件下载失败或不存在。请检查网络连接或联系管理员。")
         except Exception as e:
             logger.error(f"Pixiv 插件：下载或转换小说为PDF时发生错误 - {e}")
             yield event.plain_result(f"处理小说时发生错误: {str(e)}")
@@ -1324,7 +909,7 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result(self.AUTH_ERROR_MSG)
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         try:
@@ -1366,140 +951,10 @@ class PixivSearchPlugin(Star):
         self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""
     ):
         """查看或动态设置 Pixiv 插件参数（除 refresh_token）。"""
-        help_text = """# Pixiv 配置命令帮助
-
-## 命令格式
-/pixiv_config show
-/pixiv_config <参数名>
-/pixiv_config <参数名> <值>
-/pixiv_config help
-
-## 支持参数
-- r18_mode: 过滤_R18, 允许_R18, 仅_R18
-- ai_filter_mode: 显示_AI_作品, 过滤_AI_作品, 仅_AI_作品
-- return_count: 1-10
-- show_filter_result: true|false
-- deep_search_depth: -1|0-50
-- show_details: true|false
-- forward_threshold: 1-20
-- is_fromfilesystem: true|false
-- refresh_token_interval_minutes: 0-10080
-
-## 示例
-- /pixiv_config show
-- /pixiv_config r18_mode 仅_R18
-- /pixiv_config show_filter_result false
-"""
-        args = []
-        if arg1:
-            args.append(arg1)
-        if arg2:
-            args.append(arg2)
-        # 参数定义与校验规则
-        schema = {
-            "r18_mode": {"type": "enum", "choices": ["过滤 R18", "允许 R18", "仅 R18"]},
-            "ai_filter_mode": {
-                "type": "enum",
-                "choices": ["显示 AI 作品", "过滤 AI 作品", "仅 AI 作品"],
-            },
-            "return_count": {"type": "int", "min": 1, "max": 30},
-            "show_filter_result": {"type": "bool"},
-            "show_details": {"type": "bool"},
-            "deep_search_depth": {"type": "int", "min": -1, "max": 50},
-            "forward_threshold": {"type": "int", "min": 1, "max": 20},
-            "is_fromfilesystem": {"type": "bool"},
-            "refresh_token_interval_minutes": {"type": "int", "min": 0, "max": 10080},
-        }
-        # 统一提前定义当前配置（全部走 self.config）
-        current = {k: self.config.get(k) for k in schema.keys()}
-        if not args or (args and args[0].strip().lower() == "help"):
-            yield event.plain_result(help_text)
-            return
-        if args[0].strip().lower() == "show":
-            msg = "# 当前 Pixiv 配置\n"
-            for k, v in current.items():
-                msg += f"{k}: {v}\n"
-            yield event.plain_result(msg)
-            return
-        # 1参数：显示某项及可选项
-        key = args[0]
-        if key not in schema:
-            yield event.plain_result(
-                f"不支持的参数: {key}\n可用参数: {', '.join(schema.keys())}"
-            )
-            return
-        if len(args) == 1:
-            # 直接用 config 获取当前值
-            msg = f"{key} 当前值: {self.config.get(key, '未设置')}\n"
-            if schema[key]["type"] == "enum":
-                msg += f"可选值: {', '.join(schema[key]['choices'])}"
-            elif schema[key]["type"] == "bool":
-                msg += "可选值: true, false"
-            elif schema[key]["type"] == "int":
-                minv, maxv = schema[key].get("min", None), schema[key].get("max", None)
-                msg += f"可选范围: {minv} ~ {maxv}"
-            yield event.plain_result(msg)
-            return
-        # 2参数：设置
-        value = args[1]
-        typ = schema[key]["type"]
-        # 类型校验和转换
-        try:
-            if typ == "enum":
-                value_normalized = value.replace("_", " ")
-                choices_map = {c.replace(" ", "_"): c for c in schema[key]["choices"]}
-                if value in choices_map:
-                    value_normalized = choices_map[value]
-                if value_normalized not in schema[key]["choices"]:
-                    yield event.plain_result(
-                        f"无效值: {value}\n可选值: {', '.join(schema[key]['choices'])}\n可用下划线代替空格，如: 允许_R18"
-                    )
-                    return
-                self.config[key] = value_normalized
-            elif typ == "bool":
-                v = value.lower()
-                if v in ("true", "1", "yes", "on"):
-                    v = True
-                elif v in ("false", "0", "no", "off"):
-                    v = False
-                else:
-                    yield event.plain_result(
-                        "布尔值仅支持: true/false/yes/no/on/off/1/0"
-                    )
-                    return
-                self.config[key] = v
-            elif typ == "int":
-                try:
-                    v = int(value)
-                    # 应用配置文件中定义的验证规则
-                    if "validation" in schema[key]:
-                        if schema[key]["validation"] == "value = max(min(value, 10), 1)":
-                            v = max(min(v, 10), 1)
-                        elif schema[key]["validation"] == "value = value == -1 ? -1 : max(min(value, 50), 1)":
-                            v = -1 if v == -1 else max(min(v, 50), 1)
-                        elif schema[key]["validation"] == "value = max(min(value, 20), 1)":
-                            v = max(min(v, 20), 1)
-                    
-                    # 应用标准的 min/max 检查
-                    minv, maxv = schema[key].get("min", None), schema[key].get("max", None)
-                    if (minv is not None and v < minv) or (maxv is not None and v > maxv):
-                        yield event.plain_result(
-                            f"配置项 {key} 的值必须在 {minv} 到 {maxv} 之间。"
-                        )
-                        return
-                    self.config[key] = v
-                except ValueError:
-                    yield event.plain_result(f"配置项 {key} 的值 '{value}' 不是有效的整数。")
-                    return
-            self.config.save_config()
-        except Exception as e:
-            yield event.plain_result(f"设置失败: {e}")
-            return
-        yield event.plain_result(f"{key} 已更新为: {self.config[key]}")
-        msg = "# 当前 Pixiv 配置\n"
-        for k in schema.keys():
-            msg += f"{k}: {self.config.get(k, '未设置')}\n"
-        yield event.plain_result(msg)
+        # 使用配置管理器处理命令
+        result = await self.config_manager.handle_config_command(event, arg1, arg2)
+        if result:
+            yield event.plain_result(result)
 
     @command("pixiv_deepsearch")
     async def pixiv_deepsearch(self, event: AstrMessageEvent, tags: str):
@@ -1514,39 +969,28 @@ class PixivSearchPlugin(Star):
                 "用法: /pixiv_deepsearch <标签1>,<标签2>,...\n"
                 "深度搜索 Pixiv 插画，将遍历多个结果页面。\n"
                 "支持排除标签功能，使用 -<标签> 来排除特定标签。\n"
-                f"当前翻页深度设置: {self.deep_search_depth} 页 (-1 表示获取所有页面)"
+                f"当前翻页深度设置: {self.pixiv_config.deep_search_depth} 页 (-1 表示获取所有页面)"
             )
             return
 
         # 验证是否已认证
         if not await self._authenticate():
             yield event.plain_result(
-                "Pixiv API 认证失败，请检查配置中的凭据信息。\n" + self.AUTH_ERROR_MSG
+                "Pixiv API 认证失败，请检查配置中的凭据信息。\n" + self.pixiv_config.get_auth_error_message()
             )
             return
 
-        # 解析包含和排除标签，检查冲突
-        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(tags.strip())
-        
-        # 检查是否存在冲突标签
-        if conflict_tags:
-            conflict_list = "、".join(conflict_tags)
-            yield event.plain_result(
-                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
-                f"你药剂把干啥"
-            )
+        # 使用统一的标签处理函数
+        tag_result = validate_and_process_tags(tags.strip())
+        if not tag_result['success']:
+            yield event.plain_result(tag_result['error_message'])
             return
         
-        if not include_tags:
-            yield event.plain_result("请至少提供一个包含标签（不以 - 开头的标签）。")
-            return
-
-        # 获取翻页深度配置
-        deep_search_depth = self.config.get("deep_search_depth", 3)
-
-        # 使用包含标签进行搜索
+        include_tags = tag_result['include_tags']
+        exclude_tags = tag_result['exclude_tags']
         search_tags_list = include_tags
-        display_tags = tags.strip()
+        display_tags = tag_result['display_tags']
+        deep_search_depth = self.pixiv_config.deep_search_depth
 
         # 日志记录
         tag_str = ", ".join(search_tags_list)
@@ -1629,58 +1073,30 @@ class PixivSearchPlugin(Star):
                 f"搜索完成！共获取 {page_count} 页，找到 {initial_count} 个结果，正在处理..."
             )
 
-            # 应用排除标签过滤
-            filtered_illusts, filter_msgs = self.filter_items(all_illusts, display_tags, excluded_tags=exclude_tags)
-
-            # 1. 无论是否有结果，都先发送过滤信息（如果配置了显示）
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-
-            # 2. 检查最终过滤后是否还有结果
-            if not filtered_illusts:
-                # 如果没有结果，发送明确的提示信息然后返回
-                logger.info(
-                    f"Pixiv 插件 (DeepSearch)：经过 R18/AI/排除标签 过滤后，没有找到符合条件的作品 (标签: {display_tags})。"
-                )
-                yield event.plain_result(
-                    f"在深度搜索和过滤后，未找到与「{display_tags}」相关且符合过滤条件的作品。"
-                )
-                return  # 明确返回，不再执行后续发送逻辑
-
-            # log记录
-            logger.info(
-                f"Pixiv 插件 (DeepSearch)：最终筛选出 {len(filtered_illusts)} 个作品准备发送 (标签: {display_tags})。"
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=display_tags,
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=exclude_tags or [],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-
-            # 打乱顺序，随机选择作品
-            random.shuffle(filtered_illusts)
-            count_to_send = min(len(filtered_illusts), self.return_count)
-            # 使用切片获取要发送的插画列表
-            illusts_to_send = filtered_illusts[:count_to_send]
-
-            # 发送结果
-            if not illusts_to_send:
-                logger.info(
-                    f"深度搜索后没有符合条件的插画可供发送 (可能是 return_count 设置为 0)。(标签: {display_tags})"
-                )
-                return
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                all_illusts,  # 传入所有初始作品，让process_and_send_illusts内部处理过滤和选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：深度搜索时发生错误 - {e}")
@@ -1706,17 +1122,15 @@ class PixivSearchPlugin(Star):
             )
             return
 
-        # 解析包含和排除标签，检查冲突
-        include_tags, exclude_tags, conflict_tags = self.parse_tags_with_exclusion(cleaned_tags)
-        
-        # 检查是否存在冲突标签
-        if conflict_tags:
-            conflict_list = "、".join(conflict_tags)
-            yield event.plain_result(
-                f"标签冲突：以下标签同时出现在包含和排除列表中：{conflict_list}\n"
-                f"你药剂把干啥"
-            )
+        # 使用统一的标签处理函数
+        tag_result = validate_and_process_tags(cleaned_tags)
+        if not tag_result['success']:
+            yield event.plain_result(tag_result['error_message'])
             return
+
+        include_tags = tag_result['include_tags']
+        exclude_tags = tag_result['exclude_tags']
+        display_tag_str = tag_result['display_tags']
 
         # AND 搜索至少需要两个包含标签
         if len(include_tags) < 2:
@@ -1727,18 +1141,15 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         # 获取翻页深度配置
-        deepth = self.deep_search_depth
+        deepth = self.pixiv_config.deep_search_depth
 
         # 处理标签：分离第一个标签和其他标签
         first_tag = include_tags[0]
         other_tags = include_tags[1:]
-
-        # 构建用于显示/日志的标签字符串
-        display_tag_str = cleaned_tags
 
         logger.info(
             f"Pixiv 插件：正在进行 AND 深度搜索。策略：先用标签 '{first_tag}' 深度搜索 (翻页深度: {deepth})，然后本地过滤要求同时包含: {','.join(include_tags)}，排除标签: {exclude_tags}"
@@ -1845,51 +1256,30 @@ class PixivSearchPlugin(Star):
                 f"Pixiv 插件：本地 AND 过滤完成，找到 {initial_count} 个同时包含「{','.join(include_tags)}」所有标签的作品。"
             )
 
-            # 应用排除标签过滤
-            final_filtered_illusts, filter_msgs = self.filter_items(
-                and_filtered_illusts, display_tag_str, excluded_tags=exclude_tags
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=display_tag_str,
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=exclude_tags or [],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
             )
-
-            # 1. 无论是否有结果，都先发送过滤信息
-            if self.show_filter_result:
-                for msg in filter_msgs:
-                    yield event.plain_result(msg)
-
-            # 2. 检查最终过滤后是否还有结果
-            if not final_filtered_illusts:
-                logger.info(
-                    f"Pixiv 插件 (AND)：经过 R18/AI/排除标签 过滤后，没有找到符合条件的作品 (标签: {display_tag_str})。"
-                )
-                yield event.plain_result(
-                    f"在深度搜索和过滤后，未找到同时包含「{','.join(include_tags)}」所有标签且符合过滤条件的作品。"
-                )
-                return
-
-            # log记录
-            logger.info(
-                f"Pixiv 插件 (AND)：最终筛选出 {len(final_filtered_illusts)} 个作品准备发送 (标签: {display_tag_str})。"
-            )
-
-            # 限制返回数量
-            count_to_send = min(len(final_filtered_illusts), self.return_count)
-            # 从最终结果中随机抽样
-            illusts_to_send = random.sample(final_filtered_illusts, count_to_send)
-
-            threshold = self.config.get("forward_threshold", 5)
-            if len(illusts_to_send) > threshold:
-                async for result in self.send_forward_message(
-                    event,
-                    illusts_to_send,
-                    lambda illust: build_detail_message(illust, is_novel=False),
-                ):
-                    yield result
-            else:
-                for illust in illusts_to_send:
-                    detail_message = build_detail_message(illust, is_novel=False)
-                    async for result in self.send_pixiv_image(
-                        event, illust, detail_message, show_details=self.show_details
-                    ):
-                        yield result
+            
+            async for result in process_and_send_illusts(
+                and_filtered_illusts,  # 传入所有过滤后的作品，让process_and_send_illusts内部处理选择
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
 
         except Exception as e:
             logger.error(f"Pixiv 插件：AND 深度搜索时发生未预料的错误 - {e}")
@@ -1915,12 +1305,11 @@ class PixivSearchPlugin(Star):
 
         # 验证是否已认证
         if not await self._authenticate():
-            yield event.plain_result("Pixiv API 认证失败，请检查配置中的凭据信息。")
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
             return
 
         # 调用 Pixiv API 获取作品详情
         try:
-            logger.info(f"Pixiv 插件：正在获取作品详情 - ID: {illust_id}")
             illust_detail = self.client.illust_detail(illust_id)
 
             # 检查 illust_detail 和 illust 是否存在
@@ -1935,10 +1324,17 @@ class PixivSearchPlugin(Star):
             illust = illust_detail.illust
 
             # 统一使用 filter_illusts_with_reason 进行过滤和提示
-            filtered_illusts, filter_msgs = self.filter_items(
-                [illust], f"ID:{illust_id}"
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,    
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"ID:{illust_id}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[]
             )
-            if self.show_filter_result:
+            filtered_illusts, filter_msgs = filter_items([illust], config)
+            if self.pixiv_config.show_filter_result:
                 for msg in filter_msgs:
                     yield event.plain_result(msg)
             if not filtered_illusts:
@@ -1946,11 +1342,12 @@ class PixivSearchPlugin(Star):
 
             # 统一使用build_detail_message生成详情信息
             detail_message = build_detail_message(filtered_illusts[0], is_novel=False)
-            async for result in self.send_pixiv_image(
+            async for result in send_pixiv_image(
+                self.client,
                 event,
                 filtered_illusts[0],
                 detail_message,
-                show_details=self.show_details,
+                show_details=self.pixiv_config.show_details,
                 send_all_pages=True,  # Send all pages for specific illust
             ):
                 yield result
@@ -1967,14 +1364,14 @@ class PixivSearchPlugin(Star):
         while True:
             try:
                 # 先等待指定间隔
-                wait_seconds = self.refresh_interval * 60
+                wait_seconds = self.pixiv_config.refresh_interval * 60
                 logger.debug(
-                    f"Pixiv Token 刷新任务：等待 {self.refresh_interval} 分钟 ({wait_seconds} 秒)..."
+                    f"Pixiv Token 刷新任务：等待 {self.pixiv_config.refresh_interval} 分钟 ({wait_seconds} 秒)..."
                 )
                 await asyncio.sleep(wait_seconds)
 
                 # 检查 refresh_token 是否已配置
-                current_refresh_token = self.config.get("refresh_token")
+                current_refresh_token = self.pixiv_config.refresh_token
                 if not current_refresh_token:
                     logger.warning(
                         "Pixiv Token 刷新任务：未配置 Refresh Token，跳过本次刷新。"
