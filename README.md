@@ -35,17 +35,23 @@
 - `/pixiv_recommended` - 获取推荐作品
 - `/pixiv_ranking [模式] [日期]` - 排行榜作品
 - `/pixiv_trending_tags` - 获取趋势标签
+- `/pixiv_illust_new [类型] [最大作品ID]` - 获取大家的新插画作品
+- `/pixiv_novel_new [最大小说ID]` - 获取大家的新小说
+- `/pixiv_novel_recommended` - 获取推荐小说
 
 ### 详情查询
 - `/pixiv_specific <作品ID>` - 指定作品详情（支持动图）
 - `/pixiv_user_detail <用户ID>` - 用户详细信息
 - `/pixiv_related <作品ID>` - 相关作品推荐
+- `/pixiv_novel_series <系列ID>` - 小说系列详情
+- `/pixiv_showcase_article <特辑ID>` - 特辑详情
 
-### 动图支持
-- 插件自动识别并支持 Pixiv 动图（ugoira）格式
-- 动图会优先转换为 GIF 格式发送，便于直接播放
-- 如果系统未安装 ffmpeg 或转换失败，将发送原始 ZIP 文件
-- 动图文件包含完整的帧时序信息，确保播放效果正确
+### 评论功能
+- `/pixiv_illust_comments <作品ID> [偏移量]` - 获取作品评论
+- `/pixiv_novel_comments <小说ID> [偏移量]` - 获取小说评论
+
+### 特殊功能
+- `/pixiv_ai_show_settings <设置>` - 设置是否展示AI生成作品
 
 ### 订阅功能
 - `/pixiv_subscribe_add <画师ID>` - 订阅画师
@@ -115,9 +121,27 @@
 /pixiv_recommended
 /pixiv_ranking daily
 
+# 获取最新作品
+/pixiv_illust_new
+/pixiv_novel_new
+
+# 小说相关
+/pixiv_novel_recommended
+/pixiv_novel_series 123456
+
+# 评论功能
+/pixiv_illust_comments 12345678
+/pixiv_novel_comments 12345678
+
+# 特殊功能
+/pixiv_ai_show_settings true
+
 # 用户相关
 /pixiv_user_search 某个画师名
 /pixiv_user_detail 123456
+
+# 特辑功能
+/pixiv_showcase_article 123456
 
 # 获取帮助
 /pixiv_help

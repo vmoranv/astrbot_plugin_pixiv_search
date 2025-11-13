@@ -69,7 +69,7 @@
       "description": "默认发送的图片质量",
       "type": "string",
       "hint": "选择默认发送的图片质量：'original' (原图), 'large' (大图), 'medium' (中图)",
-      "default": "original",
+      "default": "medium",
       "options": [
           "original",
           "large",

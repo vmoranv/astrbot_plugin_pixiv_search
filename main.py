@@ -14,7 +14,7 @@ from astrbot.api.message_components import File
 from astrbot.api.all import command
 from pixivpy3 import AppPixivAPI, PixivError
 
-from .utils.tag import build_detail_message, FilterConfig, validate_and_process_tags, process_and_send_illusts, sample_illusts
+from .utils.tag import build_detail_message, FilterConfig, validate_and_process_tags, process_and_send_illusts
 from .utils.database import initialize_database, add_subscription, remove_subscription, list_subscriptions
 from .utils.subscription import SubscriptionService
 from .utils.pixiv_utils import init_pixiv_utils, filter_items, send_pixiv_image, send_forward_message
@@ -771,6 +771,116 @@ class PixivSearchPlugin(Star):
             logger.error(f"Pixiv 插件：搜索小说时发生错误 - {e}")
             yield event.plain_result(f"搜索小说时发生错误: {str(e)}")
 
+    @command("pixiv_novel_recommended")
+    async def pixiv_novel_recommended(self, event: AstrMessageEvent):
+        """获取 Pixiv 推荐小说"""
+        logger.info("Pixiv 插件：正在获取推荐小说")
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        try:
+            # 调用 API 获取推荐小说
+            recommend_result = self.client.novel_recommended(
+                include_ranking_label=True,
+                filter="for_ios"
+            )
+            initial_novels = recommend_result.novels if recommend_result.novels else []
+
+            if not initial_novels:
+                yield event.plain_result("未能获取到推荐小说。")
+                return
+
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str="推荐小说",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
+            )
+            
+            async for result in process_and_send_illusts(
+                initial_novels,
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=True
+            ):
+                yield result
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取推荐小说时发生错误 - {e}")
+            yield event.plain_result(f"获取推荐小说时发生错误: {str(e)}")
+
+    @command("pixiv_novel_series")
+    async def pixiv_novel_series(self, event: AstrMessageEvent, series_id: str = ""):
+        """获取小说系列详情"""
+        # 检查是否提供了系列 ID
+        if not series_id.strip() or series_id.strip().lower() == "help":
+            help_text = get_help_message("pixiv_novel_series", "小说系列帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证系列 ID 是否为数字
+        if not series_id.isdigit():
+            yield event.plain_result("小说系列 ID 必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在获取小说系列详情 - ID: {series_id}")
+
+        try:
+            # 调用 API 获取小说系列详情
+            series_result = self.client.novel_series(
+                series_id=int(series_id),
+                filter="for_ios"
+            )
+
+            if not series_result:
+                yield event.plain_result(f"未找到小说系列 ID {series_id}。")
+                return
+
+            # 构建系列信息
+            series_title = getattr(series_result, 'title', '未知系列')
+            series_description = getattr(series_result, 'description', '无描述')
+            novels = getattr(series_result, 'novels', [])
+
+            series_info = f"小说系列: {series_title}\n"
+            series_info += f"系列ID: {series_id}\n"
+            series_info += f"描述: {series_description}\n"
+            series_info += f"作品数量: {len(novels)}\n\n"
+
+            if novels:
+                series_info += "系列作品列表:\n"
+                for i, novel in enumerate(novels[:10], 1):  # 限制显示前10部
+                    novel_title = getattr(novel, 'title', '未知标题')
+                    novel_id = getattr(novel, 'id', '未知ID')
+                    series_info += f"{i}. {novel_title} (ID: {novel_id})\n"
+                
+                if len(novels) > 10:
+                    series_info += f"... 还有 {len(novels) - 10} 部作品\n"
+
+            yield event.plain_result(series_info)
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取小说系列详情时发生错误 - {e}")
+            yield event.plain_result(f"获取小说系列详情时发生错误: {str(e)}")
+
+
     def create_pdf_from_text(self, title: str, text: str) -> bytes:
         """使用 fpdf2 将文本转换为 PDF 字节流"""
         if not self.font_path.exists():
@@ -796,6 +906,332 @@ class PixivSearchPlugin(Star):
 
         # 返回 PDF 内容的字节
         return pdf.output(dest='S')
+
+    @command("pixiv_illust_comments")
+    async def pixiv_illust_comments(self, event: AstrMessageEvent, illust_id: str = "", offset: str = ""):
+        """获取指定作品的评论"""
+        # 检查是否提供了作品 ID
+        if not illust_id.strip() or illust_id.strip().lower() == "help":
+            help_text = get_help_message("pixiv_illust_comments", "作品评论帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证作品 ID 是否为数字
+        if not illust_id.isdigit():
+            yield event.plain_result("作品 ID 必须为数字。")
+            return
+
+        # 验证偏移量是否为数字（如果提供）
+        if offset and not offset.isdigit():
+            yield event.plain_result("偏移量必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在获取作品评论 - ID: {illust_id}, 偏移量: {offset or '0'}")
+
+        try:
+            # 使用 asyncio.to_thread 包装同步 API 调用
+            try:
+                comments_result = await asyncio.to_thread(
+                    self.client.illust_comments,
+                    illust_id=int(illust_id),
+                    offset=int(offset) if offset else None,
+                    include_total_comments=True
+                )
+            except Exception as api_error:
+                # 捕获API调用本身的错误，特别是JSON解析错误
+                error_msg = str(api_error)
+                if "parse_json() error" in error_msg:
+                    logger.error(f"Pixiv 插件：API返回空响应或非JSON格式 - {error_msg}")
+                    
+                    # 添加调试代码：尝试直接获取原始响应
+                    try:
+                        import requests
+                        url = f"{self.client.hosts}/v1/illust/comments"
+                        params = {
+                            "illust_id": illust_id,
+                            "include_total_comments": "true"
+                        }
+                        if offset:
+                            params["offset"] = offset
+                        
+                        headers = {
+                            "User-Agent": "PixivAndroidApp/5.0.64 (Android 6.0)",
+                            "Authorization": f"Bearer {self.client.access_token}"
+                        }
+                        
+                        debug_response = requests.get(url, params=params, headers=headers)
+                        logger.error(f"Pixiv 插件：调试信息 - 原始响应状态码: {debug_response.status_code}")
+                        logger.error(f"Pixiv 插件：调试信息 - 原始响应内容: {debug_response.text[:500]}")
+                        
+                        yield event.plain_result(f"获取作品评论时发生错误: API返回空响应，可能是该作品没有评论或API限制\n调试信息: 状态码 {debug_response.status_code}")
+                    except Exception as debug_e:
+                        logger.error(f"Pixiv 插件：调试请求失败 - {debug_e}")
+                        yield event.plain_result("获取作品评论时发生错误: API返回空响应，可能是该作品没有评论或API限制")
+                    return
+                    yield event.plain_result("获取作品评论时发生错误: API返回空响应，可能是该作品没有评论或API限制")
+                    return
+                else:
+                    # 重新抛出其他类型的错误
+                    raise api_error
+
+            # 检查返回结果是否有效
+            if not comments_result:
+                yield event.plain_result(f"未找到作品 ID {illust_id} 的评论。")
+                return
+
+            # 检查返回结果的结构
+            comments = None
+            total_comments = 0
+            
+            # 尝试不同的方式获取评论数据
+            if hasattr(comments_result, 'comments'):
+                comments = comments_result.comments
+                total_comments = getattr(comments_result, 'total_comments', 0)
+            elif hasattr(comments_result, 'body'):
+                if hasattr(comments_result.body, 'comments'):
+                    comments = comments_result.body.comments
+                    total_comments = getattr(comments_result.body, 'total_comments', 0)
+            elif isinstance(comments_result, dict):
+                # 如果返回的是字典，尝试从字典中获取数据
+                if 'comments' in comments_result:
+                    comments = comments_result['comments']
+                    total_comments = comments_result.get('total_comments', 0)
+                elif 'body' in comments_result and isinstance(comments_result['body'], dict):
+                    if 'comments' in comments_result['body']:
+                        comments = comments_result['body']['comments']
+                        total_comments = comments_result['body'].get('total_comments', 0)
+            
+            # 如果仍然无法获取评论，记录详细信息并返回错误
+            if comments is None:
+                logger.error(f"Pixiv 插件：评论API返回结构异常 - 类型: {type(comments_result)}, 内容: {str(comments_result)[:200]}")
+                yield event.plain_result("获取作品评论时发生错误: API返回结构异常")
+                return
+
+            if not comments:
+                yield event.plain_result(f"作品 ID {illust_id} 暂无评论。")
+                return
+
+            # 构建评论信息
+            comment_info = f"作品 ID: {illust_id} 的评论 (共 {total_comments} 条)\n\n"
+
+            # 限制显示的评论数量
+            max_comments = 10
+            displayed_comments = comments[:max_comments]
+
+            for i, comment in enumerate(displayed_comments, 1):
+                # 处理不同类型的评论对象
+                author = None
+                author_name = "匿名用户"
+                comment_text = ""
+                date = ""
+                
+                if hasattr(comment, 'user'):
+                    author = comment.user
+                elif isinstance(comment, dict) and 'user' in comment:
+                    author = comment['user']
+                
+                if author:
+                    if hasattr(author, 'name'):
+                        author_name = author.name
+                    elif isinstance(author, dict) and 'name' in author:
+                        author_name = author['name']
+                
+                if hasattr(comment, 'comment'):
+                    comment_text = comment.comment
+                elif isinstance(comment, dict) and 'comment' in comment:
+                    comment_text = comment['comment']
+                
+                if hasattr(comment, 'date'):
+                    date = comment.date
+                elif isinstance(comment, dict) and 'date' in comment:
+                    date = comment['date']
+                
+                comment_info += f"#{i} {author_name}\n"
+                comment_info += f"{comment_text}\n"
+                if date:
+                    comment_info += f"时间: {date}\n"
+                comment_info += "---\n"
+
+            # 如果评论数量超过显示限制，提示用户
+            if len(comments) > max_comments:
+                next_offset = (int(offset) if offset else 0) + max_comments
+                comment_info += f"\n已显示前 {max_comments} 条评论，使用 /pixiv_illust_comments {illust_id} {next_offset} 查看更多。"
+
+            yield event.plain_result(comment_info)
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取作品评论时发生错误 - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            yield event.plain_result(f"获取作品评论时发生错误: {str(e)}")
+
+    @command("pixiv_novel_comments")
+    async def pixiv_novel_comments(self, event: AstrMessageEvent, novel_id: str = "", offset: str = ""):
+        """获取指定小说的评论"""
+        # 检查是否提供了小说 ID
+        if not novel_id.strip() or novel_id.strip().lower() == "help":
+            help_text = get_help_message("pixiv_novel_comments", "小说评论帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证小说 ID 是否为数字
+        if not novel_id.isdigit():
+            yield event.plain_result("小说 ID 必须为数字。")
+            return
+
+        # 验证偏移量是否为数字（如果提供）
+        if offset and not offset.isdigit():
+            yield event.plain_result("偏移量必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在获取小说评论 - ID: {novel_id}, 偏移量: {offset or '0'}")
+
+        try:
+            # 使用 asyncio.to_thread 包装同步 API 调用
+            try:
+                comments_result = await asyncio.to_thread(
+                    self.client.novel_comments,
+                    novel_id=int(novel_id),
+                    offset=int(offset) if offset else None,
+                    include_total_comments=True
+                )
+            except Exception as api_error:
+                # 捕获API调用本身的错误，特别是JSON解析错误
+                error_msg = str(api_error)
+                if "parse_json() error" in error_msg:
+                    logger.error(f"Pixiv 插件：小说评论API返回空响应或非JSON格式 - {error_msg}")
+                    
+                    # 添加调试代码：尝试直接获取原始响应
+                    try:
+                        import requests
+                        url = f"{self.client.hosts}/v1/novel/comments"
+                        params = {
+                            "novel_id": novel_id,
+                            "include_total_comments": "true"
+                        }
+                        if offset:
+                            params["offset"] = offset
+                        
+                        headers = {
+                            "User-Agent": "PixivAndroidApp/5.0.64 (Android 6.0)",
+                            "Authorization": f"Bearer {self.client.access_token}"
+                        }
+                        
+                        debug_response = requests.get(url, params=params, headers=headers)
+                        logger.error(f"Pixiv 插件：调试信息 - 小说评论原始响应状态码: {debug_response.status_code}")
+                        logger.error(f"Pixiv 插件：调试信息 - 小说评论原始响应内容: {debug_response.text[:500]}")
+                        
+                        yield event.plain_result(f"获取小说评论时发生错误: API返回空响应，可能是该小说没有评论或API限制\n调试信息: 状态码 {debug_response.status_code}")
+                    except Exception as debug_e:
+                        logger.error(f"Pixiv 插件：小说评论调试请求失败 - {debug_e}")
+                        yield event.plain_result("获取小说评论时发生错误: API返回空响应，可能是该小说没有评论或API限制")
+                    return
+                    yield event.plain_result("获取小说评论时发生错误: API返回空响应，可能是该小说没有评论或API限制")
+                    return
+                else:
+                    # 重新抛出其他类型的错误
+                    raise api_error
+
+            # 检查返回结果是否有效
+            if not comments_result:
+                yield event.plain_result(f"未找到小说 ID {novel_id} 的评论。")
+                return
+
+            # 检查返回结果的结构
+            comments = None
+            total_comments = 0
+            
+            # 尝试不同的方式获取评论数据
+            if hasattr(comments_result, 'comments'):
+                comments = comments_result.comments
+                total_comments = getattr(comments_result, 'total_comments', 0)
+            elif hasattr(comments_result, 'body'):
+                if hasattr(comments_result.body, 'comments'):
+                    comments = comments_result.body.comments
+                    total_comments = getattr(comments_result.body, 'total_comments', 0)
+            elif isinstance(comments_result, dict):
+                # 如果返回的是字典，尝试从字典中获取数据
+                if 'comments' in comments_result:
+                    comments = comments_result['comments']
+                    total_comments = comments_result.get('total_comments', 0)
+                elif 'body' in comments_result and isinstance(comments_result['body'], dict):
+                    if 'comments' in comments_result['body']:
+                        comments = comments_result['body']['comments']
+                        total_comments = comments_result['body'].get('total_comments', 0)
+            
+            # 如果仍然无法获取评论，记录详细信息并返回错误
+            if comments is None:
+                logger.error(f"Pixiv 插件：小说评论API返回结构异常 - 类型: {type(comments_result)}, 内容: {str(comments_result)[:200]}")
+                yield event.plain_result("获取小说评论时发生错误: API返回结构异常")
+                return
+
+            if not comments:
+                yield event.plain_result(f"小说 ID {novel_id} 暂无评论。")
+                return
+
+            # 构建评论信息
+            comment_info = f"小说 ID: {novel_id} 的评论 (共 {total_comments} 条)\n\n"
+
+            # 限制显示的评论数量
+            max_comments = 10
+            displayed_comments = comments[:max_comments]
+
+            for i, comment in enumerate(displayed_comments, 1):
+                # 处理不同类型的评论对象
+                author = None
+                author_name = "匿名用户"
+                comment_text = ""
+                date = ""
+                
+                if hasattr(comment, 'user'):
+                    author = comment.user
+                elif isinstance(comment, dict) and 'user' in comment:
+                    author = comment['user']
+                
+                if author:
+                    if hasattr(author, 'name'):
+                        author_name = author.name
+                    elif isinstance(author, dict) and 'name' in author:
+                        author_name = author['name']
+                
+                if hasattr(comment, 'comment'):
+                    comment_text = comment.comment
+                elif isinstance(comment, dict) and 'comment' in comment:
+                    comment_text = comment['comment']
+                
+                if hasattr(comment, 'date'):
+                    date = comment.date
+                elif isinstance(comment, dict) and 'date' in comment:
+                    date = comment['date']
+                
+                comment_info += f"#{i} {author_name}\n"
+                comment_info += f"{comment_text}\n"
+                if date:
+                    comment_info += f"时间: {date}\n"
+                comment_info += "---\n"
+
+            # 如果评论数量超过显示限制，提示用户
+            if len(comments) > max_comments:
+                next_offset = (int(offset) if offset else 0) + max_comments
+                comment_info += f"\n已显示前 {max_comments} 条评论，使用 /pixiv_novel_comments {novel_id} {next_offset} 查看更多。"
+
+            yield event.plain_result(comment_info)
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取小说评论时发生错误 - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            yield event.plain_result(f"获取小说评论时发生错误: {str(e)}")
 
     @command("pixiv_novel_download")
     async def pixiv_novel_download(self, event: AstrMessageEvent, novel_id: str = ""):
@@ -900,6 +1336,147 @@ class PixivSearchPlugin(Star):
             logger.error(f"Pixiv 插件：下载或转换小说为PDF时发生错误 - {e}")
             yield event.plain_result(f"处理小说时发生错误: {str(e)}")
 
+    @command("pixiv_illust_new")
+    async def pixiv_illust_new(self, event: AstrMessageEvent, content_type: str = "illust", max_illust_id: str = ""):
+        """获取大家的新插画作品"""
+        # 检查是否为帮助请求
+        if content_type.strip().lower() == "help":
+            help_text = get_help_message("pixiv_illust_new", "新插画作品帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证内容类型
+        valid_content_types = ["illust", "manga"]
+        if content_type not in valid_content_types:
+            yield event.plain_result(f"无效的内容类型: {content_type}\n可用类型: {', '.join(valid_content_types)}")
+            return
+
+        # 验证最大作品ID（如果提供）
+        if max_illust_id and not max_illust_id.isdigit():
+            yield event.plain_result("最大作品ID必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在获取新插画作品 - 类型: {content_type}, 最大ID: {max_illust_id or '最新'}")
+
+        try:
+            # 调用 API 获取新插画作品
+            new_illusts_result = self.client.illust_new(
+                content_type=content_type,
+                filter="for_ios",
+                max_illust_id=int(max_illust_id) if max_illust_id else None
+            )
+
+            if not new_illusts_result or not hasattr(new_illusts_result, 'illusts'):
+                yield event.plain_result("未能获取到新插画作品。")
+                return
+
+            initial_illusts = new_illusts_result.illusts if new_illusts_result.illusts else []
+
+            if not initial_illusts:
+                yield event.plain_result("暂无新插画作品。")
+                return
+
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str=f"新{content_type}",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
+            )
+            
+            async for result in process_and_send_illusts(
+                initial_illusts,
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=False
+            ):
+                yield result
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取新插画作品时发生错误 - {e}")
+            yield event.plain_result(f"获取新插画作品时发生错误: {str(e)}")
+
+    @command("pixiv_novel_new")
+    async def pixiv_novel_new(self, event: AstrMessageEvent, max_novel_id: str = ""):
+        """获取大家的新小说"""
+        # 检查是否为帮助请求
+        if max_novel_id.strip().lower() == "help":
+            help_text = get_help_message("pixiv_novel_new", "新小说帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证最大小说ID（如果提供）
+        if max_novel_id and not max_novel_id.isdigit():
+            yield event.plain_result("最大小说ID必须为数字。")
+            return
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在获取新小说 - 最大ID: {max_novel_id or '最新'}")
+
+        try:
+            # 调用 API 获取新小说
+            new_novels_result = self.client.novel_new(
+                filter="for_ios",
+                max_novel_id=int(max_novel_id) if max_novel_id else None
+            )
+
+            if not new_novels_result or not hasattr(new_novels_result, 'novels'):
+                yield event.plain_result("未能获取到新小说。")
+                return
+
+            initial_novels = new_novels_result.novels if new_novels_result.novels else []
+
+            if not initial_novels:
+                yield event.plain_result("暂无新小说。")
+                return
+
+            # 使用统一的作品处理和发送函数
+            config = FilterConfig(
+                r18_mode=self.pixiv_config.r18_mode,
+                ai_filter_mode=self.pixiv_config.ai_filter_mode,
+                display_tag_str="新小说",
+                return_count=self.pixiv_config.return_count,
+                logger=logger,
+                show_filter_result=self.pixiv_config.show_filter_result,
+                excluded_tags=[],
+                forward_threshold=self.pixiv_config.forward_threshold,
+                show_details=self.pixiv_config.show_details
+            )
+            
+            async for result in process_and_send_illusts(
+                initial_novels,
+                config,
+                self.client,
+                event,
+                build_detail_message,
+                send_pixiv_image,
+                send_forward_message,
+                is_novel=True
+            ):
+                yield result
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取新小说时发生错误 - {e}")
+            yield event.plain_result(f"获取新小说时发生错误: {str(e)}")
+
     @command("pixiv_trending_tags")
     async def pixiv_trending_tags(self, event: AstrMessageEvent):
         """获取 Pixiv 插画趋势标签"""
@@ -943,6 +1520,218 @@ class PixivSearchPlugin(Star):
         except Exception as e:
             logger.error(f"Pixiv 插件：获取趋势标签时发生错误 - {e}")
             yield event.plain_result(f"获取趋势标签时发生错误: {str(e)}")
+
+    @command("pixiv_ai_show_settings")
+    async def pixiv_ai_show_settings(self, event: AstrMessageEvent, setting: str = ""):
+        """设置是否展示AI生成作品"""
+        # 检查是否为帮助请求
+        if not setting.strip() or setting.strip().lower() == "help":
+            help_text = get_help_message("pixiv_ai_show_settings", "AI作品设置帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证设置参数
+        valid_settings = ["true", "false", "1", "0", "yes", "no", "on", "off"]
+        if setting.lower() not in valid_settings:
+            yield event.plain_result(f"无效的设置值: {setting}\n可用值: {', '.join(valid_settings)}")
+            return
+
+        # 转换为字符串 "true" 或 "false" (API要求)
+        setting_str = "true" if setting.lower() in ["true", "1", "yes", "on"] else "false"
+
+        # 验证是否已认证
+        if not await self._authenticate():
+            yield event.plain_result(self.pixiv_config.get_auth_error_message())
+            return
+
+        logger.info(f"Pixiv 插件：正在设置AI作品显示 - 设置: {setting_str}")
+
+        try:
+            # 使用 asyncio.to_thread 包装同步 API 调用
+            result = await asyncio.to_thread(
+                self.client.user_edit_ai_show_settings,
+                setting=setting_str
+            )
+
+            if result and hasattr(result, 'error') and result.error:
+                yield event.plain_result(f"设置AI作品显示失败: {result.error.get('message', '未知错误')}")
+                return
+
+            # 同时更新本地配置
+            if setting_str == "true":
+                self.pixiv_config.ai_filter_mode = "显示 AI 作品"
+                mode_desc = "显示AI作品"
+            else:
+                self.pixiv_config.ai_filter_mode = "过滤 AI 作品"
+                mode_desc = "过滤AI作品"
+
+            # 保存配置
+            self.pixiv_config.save_config()
+
+            yield event.plain_result(f"AI作品设置已更新为: {mode_desc}\n本地配置已同步更新。")
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：设置AI作品显示时发生错误 - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            yield event.plain_result(f"设置AI作品显示时发生错误: {str(e)}")
+
+    @command("pixiv_showcase_article")
+    async def pixiv_showcase_article(self, event: AstrMessageEvent, showcase_id: str = ""):
+        """获取特辑详情"""
+        # 检查是否提供了特辑 ID
+        if not showcase_id.strip() or showcase_id.strip().lower() == "help":
+            help_text = get_help_message("pixiv_showcase_article", "特辑详情帮助消息加载失败，请检查配置文件。")
+            yield event.plain_result(help_text)
+            return
+
+        # 验证特辑 ID 是否为数字
+        if not showcase_id.isdigit():
+            yield event.plain_result("特辑 ID 必须为数字。")
+            return
+
+        logger.info(f"Pixiv 插件：正在获取特辑详情 - ID: {showcase_id}")
+
+        try:
+            # 调用 API 获取特辑详情（无需登录）
+            showcase_result = self.client.showcase_article(showcase_id=int(showcase_id))
+
+            if not showcase_result:
+                yield event.plain_result(f"未找到特辑 ID {showcase_id}。")
+                return
+
+            # 检查返回结果的结构，处理不同的数据格式
+            title = None
+            description = None
+            article_url = None
+            publish_date = None
+            artworks = []
+            
+            # 尝试从对象属性获取数据
+            if hasattr(showcase_result, 'title'):
+                title = showcase_result.title
+            elif hasattr(showcase_result, 'body') and hasattr(showcase_result.body, 'title'):
+                title = showcase_result.body.title
+            elif isinstance(showcase_result, dict):
+                if 'title' in showcase_result:
+                    title = showcase_result['title']
+                elif 'body' in showcase_result and isinstance(showcase_result['body'], dict) and 'title' in showcase_result['body']:
+                    title = showcase_result['body']['title']
+            
+            # 类似地处理其他字段
+            if hasattr(showcase_result, 'description'):
+                description = showcase_result.description
+            elif hasattr(showcase_result, 'body') and hasattr(showcase_result.body, 'description'):
+                description = showcase_result.body.description
+            elif isinstance(showcase_result, dict):
+                if 'description' in showcase_result:
+                    description = showcase_result['description']
+                elif 'body' in showcase_result and isinstance(showcase_result['body'], dict) and 'description' in showcase_result['body']:
+                    description = showcase_result['body']['description']
+            
+            if hasattr(showcase_result, 'article_url'):
+                article_url = showcase_result.article_url
+            elif hasattr(showcase_result, 'body') and hasattr(showcase_result.body, 'article_url'):
+                article_url = showcase_result.body.article_url
+            elif isinstance(showcase_result, dict):
+                if 'article_url' in showcase_result:
+                    article_url = showcase_result['article_url']
+                elif 'body' in showcase_result and isinstance(showcase_result['body'], dict) and 'article_url' in showcase_result['body']:
+                    article_url = showcase_result['body']['article_url']
+            
+            if hasattr(showcase_result, 'publish_date'):
+                publish_date = showcase_result.publish_date
+            elif hasattr(showcase_result, 'body') and hasattr(showcase_result.body, 'publish_date'):
+                publish_date = showcase_result.body.publish_date
+            elif isinstance(showcase_result, dict):
+                if 'publish_date' in showcase_result:
+                    publish_date = showcase_result['publish_date']
+                elif 'body' in showcase_result and isinstance(showcase_result['body'], dict) and 'publish_date' in showcase_result['body']:
+                    publish_date = showcase_result['body']['publish_date']
+            
+            # 处理作品列表
+            if hasattr(showcase_result, 'artworks'):
+                artworks = showcase_result.artworks
+            elif hasattr(showcase_result, 'body') and hasattr(showcase_result.body, 'artworks'):
+                artworks = showcase_result.body.artworks
+            elif isinstance(showcase_result, dict):
+                if 'artworks' in showcase_result:
+                    artworks = showcase_result['artworks']
+                elif 'body' in showcase_result and isinstance(showcase_result['body'], dict) and 'artworks' in showcase_result['body']:
+                    artworks = showcase_result['body']['artworks']
+            
+            # 如果仍然无法获取数据，记录详细信息并返回错误
+            if not title and not description and not artworks:
+                logger.error(f"Pixiv 插件：特辑API返回结构异常 - 类型: {type(showcase_result)}, 内容: {str(showcase_result)[:200]}")
+                yield event.plain_result("获取特辑详情时发生错误: API返回结构异常或特辑不存在")
+                return
+            
+            # 构建特辑信息
+            title = title or '未知特辑'
+            description = description or '无描述'
+            article_url = article_url or ''
+            publish_date = publish_date or '未知日期'
+            
+            showcase_info = f"特辑标题: {title}\n"
+            showcase_info += f"特辑ID: {showcase_id}\n"
+            showcase_info += f"发布日期: {publish_date}\n"
+            
+            if description:
+                # 限制描述长度
+                if len(description) > 500:
+                    description = description[:500] + "..."
+                showcase_info += f"描述: {description}\n"
+            
+            if article_url:
+                showcase_info += f"链接: {article_url}\n"
+
+            # 获取特辑中的作品
+            if artworks:
+                showcase_info += f"\n包含作品 ({len(artworks)}件):\n"
+                for i, artwork in enumerate(artworks[:10], 1):  # 限制显示前10个
+                    # 处理不同类型的作品对象
+                    artwork_title = None
+                    artwork_id = None
+                    author_name = "未知作者"
+                    
+                    if hasattr(artwork, 'title'):
+                        artwork_title = artwork.title
+                    elif isinstance(artwork, dict) and 'title' in artwork:
+                        artwork_title = artwork['title']
+                    
+                    if hasattr(artwork, 'id'):
+                        artwork_id = artwork.id
+                    elif isinstance(artwork, dict) and 'id' in artwork:
+                        artwork_id = artwork['id']
+                    
+                    # 处理作者信息
+                    author = None
+                    if hasattr(artwork, 'user'):
+                        author = artwork.user
+                    elif isinstance(artwork, dict) and 'user' in artwork:
+                        author = artwork['user']
+                    
+                    if author:
+                        if hasattr(author, 'name'):
+                            author_name = author.name
+                        elif isinstance(author, dict) and 'name' in author:
+                            author_name = author['name']
+                    
+                    artwork_title = artwork_title or '未知标题'
+                    artwork_id = artwork_id or '未知ID'
+                    
+                    showcase_info += f"{i}. {artwork_title} - {author_name} (ID: {artwork_id})\n"
+                
+                if len(artworks) > 10:
+                    showcase_info += f"... 还有 {len(artworks) - 10} 个作品\n"
+
+            yield event.plain_result(showcase_info)
+
+        except Exception as e:
+            logger.error(f"Pixiv 插件：获取特辑详情时发生错误 - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            yield event.plain_result(f"获取特辑详情时发生错误: {str(e)}")
 
     @command("pixiv_config")
     async def pixiv_config(

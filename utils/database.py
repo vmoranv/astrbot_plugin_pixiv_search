@@ -1,7 +1,6 @@
 import peewee as pw
 from astrbot.api import logger
 from astrbot.api.star import StarTools
-from pathlib import Path
 
 # 使用 StarTools 获取标准数据目录
 data_dir = StarTools.get_data_dir("pixiv_search")
