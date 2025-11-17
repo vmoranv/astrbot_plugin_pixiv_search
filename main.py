@@ -19,6 +19,7 @@ from .utils.database import initialize_database, add_subscription, remove_subscr
 from .utils.subscription import SubscriptionService
 from .utils.pixiv_utils import init_pixiv_utils, filter_items, send_pixiv_image, send_forward_message
 from .utils.help import init_help_manager, get_help_message
+from .utils.llm_tool import create_pixiv_llm_tools
 
 @register(
     "pixiv_search",
@@ -90,6 +91,18 @@ class PixivSearchPlugin(Star):
             self.sub_service.start()
         else:
             logger.info("Pixiv 插件：订阅功能已禁用。")
+            
+        # 初始化LLM工具
+        logger.info(f"Pixiv 插件：准备初始化LLM工具，client: {'已设置' if self.client else '未设置'}")
+        self.llm_tools = create_pixiv_llm_tools(self.client, self.pixiv_config)
+        logger.info("Pixiv 插件：LLM工具已初始化。")
+        
+        # 注册LLM工具到AstrBot
+        try:
+            self.context.add_llm_tools(*self.llm_tools)
+            logger.info(f"Pixiv 插件：已注册 {len(self.llm_tools)} 个LLM工具到AstrBot系统。")
+        except Exception as e:
+            logger.error(f"Pixiv 插件：注册LLM工具失败 - {e}")
 
     @staticmethod
     def info() -> Dict[str, Any]:
@@ -2221,3 +2234,51 @@ class PixivSearchPlugin(Star):
         if self._http_session is None or self._http_session.closed:
             self._http_session = aiohttp.ClientSession()
         return self._http_session
+
+    async def pixiv_llm_search(self, query: str, search_type: str = "illust") -> str:
+        """
+        使用LLM工具进行智能搜索
+        
+        Args:
+            query: 搜索查询，可以是自然语言描述
+            search_type: 搜索类型，如 'illust', 'novel', 'user' 等
+            
+        Returns:
+            str: 搜索结果
+        """
+        try:
+            # 验证是否已认证
+            if not await self._authenticate():
+                return self.pixiv_config.get_auth_error_message()
+            
+            logger.info(f"Pixiv 插件：使用LLM工具搜索 - 查询: {query}, 类型: {search_type}")
+            
+            # 使用PixivSearchTool进行搜索
+            search_tool = None
+            for tool in self.llm_tools:
+                if hasattr(tool, 'name') and tool.name == "pixiv_search":
+                    search_tool = tool
+                    break
+            
+            if not search_tool:
+                return "LLM搜索工具未初始化"
+            
+            # 创建模拟的上下文
+            from astrbot.core.agent.run_context import ContextWrapper
+            from astrbot.core.astr_agent_context import AstrAgentContext
+            mock_context = ContextWrapper(AstrAgentContext())
+            
+            # 调用搜索工具
+            result = await search_tool.call(
+                mock_context,
+                query=query,
+                search_type=search_type
+            )
+            
+            logger.info("Pixiv 插件：LLM搜索完成")
+            return result
+            
+        except Exception as e:
+            error_msg = f"LLM搜索时发生错误: {str(e)}"
+            logger.error(error_msg)
+            return error_msg
