@@ -27,7 +27,6 @@ def get_global_pixiv_client():
     """获取全局Pixiv客户端"""
     return _GLOBAL_PIXIV_CLIENT
 
-
 @dataclass
 class PixivLLMTool(FunctionTool[AstrAgentContext]):
     """
@@ -221,7 +220,6 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
         try:
             query = kwargs.get("query", "")
             search_type = kwargs.get("search_type", "illust")
-            filters = kwargs.get("filters", "")
             
             # 存储上下文信息，供_convert_query_to_tags使用
             self._last_context = context
@@ -376,7 +374,6 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
         else:
             return f"根据查询 '{query}' 转换的标签 '{tags}' 找到作品，但都被过滤了。"
     
-    
     def _format_text_results(self, illusts, query, tags):
         """格式化文本结果"""
         result = f"根据查询 '{query}' 转换的标签 '{tags}' 找到以下作品:\n\n"
@@ -514,9 +511,6 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
         
         return None
     
-
-
-
 def create_pixiv_llm_tools(pixiv_client=None, pixiv_config=None) -> List[FunctionTool]:
     """
     创建Pixiv相关的LLM工具列表

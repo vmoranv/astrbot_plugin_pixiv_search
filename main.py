@@ -8,7 +8,7 @@ from pathlib import Path
 from fpdf import FPDF
 
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.star import Context, Star, register, StarTools
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
 from astrbot.api.message_components import File
 from astrbot.api.all import command
@@ -103,7 +103,7 @@ class PixivSearchPlugin(Star):
             "name": "pixiv_search",
             "author": "vmoranv",
             "description": "Pixiv 图片搜索",
-            "version": "1.4.0",
+            "version": "1.4.1",
             "homepage": "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
         }
 
