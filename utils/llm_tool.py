@@ -202,6 +202,8 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
         super().__init__()
         self.pixiv_client = pixiv_client
         logger.info(f"PixivSearchTool初始化，pixiv_client: {'已设置' if pixiv_client else '未设置'}")
+        # 存储上下文信息用于LLM调用
+        self._last_context = None
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -221,46 +223,14 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
             search_type = kwargs.get("search_type", "illust")
             filters = kwargs.get("filters", "")
             
+            # 存储上下文信息，供_convert_query_to_tags使用
+            self._last_context = context
+            
             logger.info(f"Pixiv搜索工具：搜索 '{query}'，类型: {search_type}")
             
-            # 尝试从上下文获取pixiv_client
-            pixiv_client = None
-            agent_context = None
-            
-            # 首先尝试从自身属性获取
-            if hasattr(self, 'pixiv_client') and self.pixiv_client is not None:
-                pixiv_client = self.pixiv_client
-            else:
-                # 尝试从上下文获取插件实例，然后获取客户端
-                try:
-                    # 获取AstrAgentContext
-                    agent_context = context.context if hasattr(context, 'context') else context
-                    
-                    # 尝试从agent_context获取插件实例
-                    if hasattr(agent_context, 'plugin_instance') and agent_context.plugin_instance:
-                        plugin_instance = agent_context.plugin_instance
-                        if hasattr(plugin_instance, 'client'):
-                            pixiv_client = plugin_instance.client
-                            logger.info("PixivSearchTool: 从上下文获取到pixiv_client")
-                    
-                    # 如果上述方法失败，尝试从agent_context的star属性获取
-                    elif hasattr(agent_context, 'star') and agent_context.star:
-                        plugin_instance = agent_context.star
-                        if hasattr(plugin_instance, 'client'):
-                            pixiv_client = plugin_instance.client
-                            logger.info("PixivSearchTool: 从star属性获取到pixiv_client")
-                    
-                except Exception as e:
-                    logger.warning(f"PixivSearchTool: 从上下文获取pixiv_client失败: {e}")
-            
-            # 如果仍然无法获取客户端，尝试从全局变量获取
-            if pixiv_client is None:
-                pixiv_client = get_global_pixiv_client()
-                if pixiv_client:
-                    logger.info("PixivSearchTool: 从全局变量获取到pixiv_client")
-            
-            # 检查pixiv_client是否可用
-            if pixiv_client is None:
+            # 获取Pixiv客户端
+            pixiv_client = self._get_pixiv_client(context)
+            if not pixiv_client:
                 logger.error("PixivSearchTool: 无法获取pixiv_client")
                 return "错误: Pixiv客户端未初始化，无法执行搜索"
             
@@ -278,171 +248,18 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
                     )
                     
                     if search_result and search_result.illusts:
-                        # 尝试获取事件对象用于发送图片
-                        event = None
-                        plugin_config = None
-                        
-                        # 尝试多种方式获取事件对象和配置
-                        try:
-                            # 方法1: 从context获取
-                            if hasattr(context, 'event') and context.event:
-                                event = context.event
-                                logger.info("PixivSearchTool: 从context.event获取到事件对象")
-                            
-                            # 方法2: 从agent_context获取
-                            if not event and agent_context:
-                                if hasattr(agent_context, 'event') and agent_context.event:
-                                    event = agent_context.event
-                                    logger.info("PixivSearchTool: 从agent_context.event获取到事件对象")
-                                
-                                # 尝试获取插件配置
-                                if hasattr(agent_context, 'plugin_instance') and agent_context.plugin_instance:
-                                    plugin_instance = agent_context.plugin_instance
-                                    if hasattr(plugin_instance, 'pixiv_config'):
-                                        plugin_config = plugin_instance.pixiv_config
-                                        logger.info("PixivSearchTool: 从plugin_instance获取到配置")
-                                elif hasattr(agent_context, 'star') and agent_context.star:
-                                    plugin_instance = agent_context.star
-                                    if hasattr(plugin_instance, 'pixiv_config'):
-                                        plugin_config = plugin_instance.pixiv_config
-                                        logger.info("PixivSearchTool: 从star获取到配置")
-                            
-                            # 方法3: 尝试从context的context属性获取
-                            if not event and hasattr(context, 'context'):
-                                inner_context = context.context
-                                if hasattr(inner_context, 'event') and inner_context.event:
-                                    event = inner_context.event
-                                    logger.info("PixivSearchTool: 从context.context.event获取到事件对象")
-                                    
-                                if not plugin_config and hasattr(inner_context, 'plugin_instance') and inner_context.plugin_instance:
-                                    plugin_instance = inner_context.plugin_instance
-                                    if hasattr(plugin_instance, 'pixiv_config'):
-                                        plugin_config = plugin_instance.pixiv_config
-                                        logger.info("PixivSearchTool: 从context.context.plugin_instance获取到配置")
-                                    
-                            # 方法4: 尝试从context的任何属性中查找事件对象
-                            if not event:
-                                for attr_name in dir(context):
-                                    if 'event' in attr_name.lower():
-                                        try:
-                                            attr_value = getattr(context, attr_name)
-                                            if hasattr(attr_value, 'plain_result') or hasattr(attr_value, 'chain_result'):
-                                                event = attr_value
-                                                logger.info(f"PixivSearchTool: 从context.{attr_name}获取到事件对象")
-                                                break
-                                        except:
-                                            continue
-                            
-                            # 方法5: 尝试从agent_context的任何属性中查找事件对象
-                            if not event and agent_context:
-                                for attr_name in dir(agent_context):
-                                    if 'event' in attr_name.lower():
-                                        try:
-                                            attr_value = getattr(agent_context, attr_name)
-                                            if hasattr(attr_value, 'plain_result') or hasattr(attr_value, 'chain_result'):
-                                                event = attr_value
-                                                logger.info(f"PixivSearchTool: 从agent_context.{attr_name}获取到事件对象")
-                                                break
-                                        except:
-                                            continue
-                            
-                            # 方法6: 尝试从context的__dict__中查找事件对象
-                            if not event:
-                                for key, value in context.__dict__.items():
-                                    if 'event' in key.lower() and hasattr(value, 'plain_result'):
-                                        event = value
-                                        logger.info(f"PixivSearchTool: 从context.__dict__.{key}获取到事件对象")
-                                        break
-                            
-                            # 方法7: 尝试从agent_context的__dict__中查找事件对象
-                            if not event and agent_context:
-                                for key, value in agent_context.__dict__.items():
-                                    if 'event' in key.lower() and hasattr(value, 'plain_result'):
-                                        event = value
-                                        logger.info(f"PixivSearchTool: 从agent_context.__dict__.{key}获取到事件对象")
-                                        break
-                        except Exception as e:
-                            logger.warning(f"PixivSearchTool: 获取事件对象和配置时出错: {e}")
+                        # 获取事件对象和配置
+                        event, plugin_config = self._get_event_and_config(context)
                         
                         # 如果有事件对象，尝试发送实际图片
                         if event:
-                            logger.info("PixivSearchTool: 找到事件对象，准备发送图片")
-                            
-                            # 使用过滤配置
-                            config = FilterConfig(
-                                r18_mode=plugin_config.r18_mode if plugin_config else "过滤 R18",
-                                ai_filter_mode=plugin_config.ai_filter_mode if plugin_config else "过滤 AI 作品",
-                                display_tag_str=f"搜索:{query}",
-                                return_count=plugin_config.return_count if plugin_config else 1,
-                                logger=logger,
-                                show_filter_result=False,
-                                excluded_tags=[]
+                            return await self._send_pixiv_result(
+                                pixiv_client, event, plugin_config,
+                                search_result.illusts, query, tags
                             )
-                            
-                            # 过滤作品
-                            filtered_illusts, _ = filter_illusts_with_reason(search_result.illusts, config)
-                            
-                            if filtered_illusts:
-                                # 随机选择一个作品
-                                selected_illust = sample_illusts(filtered_illusts, 1, shuffle=True)[0]
-                                
-                                # 构建详情消息
-                                detail_message = build_detail_message(selected_illust, is_novel=False)
-                                
-                                # 尝试发送图片
-                                try:
-                                    logger.info("PixivSearchTool: 开始发送图片")
-                                    # 直接发送图片，不使用嵌套的生成器
-                                    sent_successfully = False
-                                    results = []
-                                    async for result in send_pixiv_image(
-                                        pixiv_client, event, selected_illust, detail_message,
-                                        show_details=plugin_config.show_details if plugin_config else True
-                                    ):
-                                        logger.info("PixivSearchTool: 图片发送成功")
-                                        sent_successfully = True
-                                        results.append(result)
-                                    
-                                    # 返回简单的文本结果，让Agent知道搜索成功
-                                    if sent_successfully:
-                                        # 如果有发送结果，返回第一个结果（通常是图片和描述）
-                                        if results:
-                                            return results[0]
-                                        else:
-                                            return f"已成功发送搜索结果: {detail_message.split()[0] if detail_message else 'Pixiv作品'}"
-                                    else:
-                                        return f"搜索完成但发送可能失败: {detail_message.split()[0] if detail_message else 'Pixiv作品'}"
-                                        
-                                except Exception as send_error:
-                                    logger.error(f"发送图片失败: {send_error}")
-                                    # 如果发送图片失败，返回文本信息
-                                    return f"找到作品但发送图片失败: {detail_message}"
-                            else:
-                                return f"根据查询 '{query}' 转换的标签 '{tags}' 找到作品，但都被过滤了。"
                         else:
                             logger.warning("PixivSearchTool: 未找到事件对象，无法发送图片")
-                            
-                            # 没有事件对象，返回文本描述
-                            result = f"根据查询 '{query}' 转换的标签 '{tags}' 找到以下作品:\n\n"
-                            for i, illust in enumerate(search_result.illusts[:5], 1):
-                                # 使用build_detail_message获取正确标题
-                                detail_msg = build_detail_message(illust, is_novel=False)
-                                # 提取标题 - 从detail_msg中提取第一行的标题
-                                title = getattr(illust, 'title', '未知标题')
-                                if title == '无题' and detail_msg:
-                                    # 尝试从detail_msg中提取标题
-                                    lines = detail_msg.split('\n')
-                                    if lines and lines[0].strip():
-                                        title = lines[0].strip()
-                                
-                                author = getattr(illust.user, 'name', '未知作者') if hasattr(illust, 'user') else '未知作者'
-                                illust_id = getattr(illust, 'id', '未知ID')
-                                result += f"{i}. {title} - {author} (ID: {illust_id})\n"
-                            
-                            if len(search_result.illusts) > 5:
-                                result += f"\n... 还有 {len(search_result.illusts) - 5} 个作品"
-                            
-                            return result
+                            return self._format_text_results(search_result.illusts, query, tags)
                     else:
                         return f"根据查询 '{query}' 转换的标签 '{tags}' 未找到相关作品。"
                 except Exception as api_error:
@@ -456,9 +273,136 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
             logger.error(error_msg)
             return error_msg
     
+    def _get_pixiv_client(self, context):
+        """获取Pixiv客户端"""
+        # 首先尝试从自身属性获取
+        if hasattr(self, 'pixiv_client') and self.pixiv_client is not None:
+            return self.pixiv_client
+        
+        # 尝试从全局变量获取
+        pixiv_client = get_global_pixiv_client()
+        if pixiv_client:
+            return pixiv_client
+        
+        return None
+    
+    def _get_event_and_config(self, context):
+        """获取事件对象和配置"""
+        event = None
+        plugin_config = None
+        
+        try:
+            # 获取AstrAgentContext
+            agent_context = context.context if hasattr(context, 'context') else context
+            
+            # 尝试获取事件对象
+            if hasattr(context, 'event') and context.event:
+                event = context.event
+            elif hasattr(agent_context, 'event') and agent_context.event:
+                event = agent_context.event
+            
+            # 尝试获取插件配置
+            if hasattr(agent_context, 'plugin_instance') and agent_context.plugin_instance:
+                plugin_instance = agent_context.plugin_instance
+                if hasattr(plugin_instance, 'pixiv_config'):
+                    plugin_config = plugin_instance.pixiv_config
+            elif hasattr(agent_context, 'star') and agent_context.star:
+                plugin_instance = agent_context.star
+                if hasattr(plugin_instance, 'pixiv_config'):
+                    plugin_config = plugin_instance.pixiv_config
+                    
+        except Exception as e:
+            logger.warning(f"PixivSearchTool: 获取事件对象和配置时出错: {e}")
+        
+        return event, plugin_config
+    
+    async def _send_pixiv_result(self, pixiv_client, event, plugin_config, illusts, query, tags):
+        """发送Pixiv搜索结果"""
+        logger.info("PixivSearchTool: 找到事件对象，准备发送图片")
+        
+        # 使用过滤配置
+        config = FilterConfig(
+            r18_mode=plugin_config.r18_mode if plugin_config else "过滤 R18",
+            ai_filter_mode=plugin_config.ai_filter_mode if plugin_config else "过滤 AI 作品",
+            display_tag_str=f"搜索:{query}",
+            return_count=plugin_config.return_count if plugin_config else 1,
+            logger=logger,
+            show_filter_result=False,
+            excluded_tags=[]
+        )
+        
+        # 过滤作品
+        filtered_illusts, _ = filter_illusts_with_reason(illusts, config)
+        
+        if filtered_illusts:
+            # 随机选择一个作品
+            selected_illust = sample_illusts(filtered_illusts, 1, shuffle=True)[0]
+            
+            # 构建详情消息
+            detail_message = build_detail_message(selected_illust, is_novel=False)
+            
+            # 获取作品信息用于返回
+            title = getattr(selected_illust, 'title', '未知标题')
+            author = getattr(selected_illust.user, 'name', '未知作者') if hasattr(selected_illust, 'user') else '未知作者'
+            illust_id = getattr(selected_illust, 'id', '未知ID')
+            
+            # 构建返回给Agent的文本信息
+            text_result = f"找到了！为您搜索到{query}的相关作品：\n\n**{title}** - {author}\n\n作品ID: {illust_id}\n您可以通过这个ID在Pixiv上查看完整的图片内容。"
+            
+            # 尝试发送图片
+            try:
+                logger.info("PixivSearchTool: 开始发送图片")
+                
+                # 直接发送图片并收集结果
+                results = []
+                async for result in send_pixiv_image(
+                    pixiv_client, event, selected_illust, detail_message,
+                    show_details=plugin_config.show_details if plugin_config else True
+                ):
+                    results.append(result)
+                    logger.info(f"PixivSearchTool: 获取到发送结果: {type(result)}")
+                
+                # 如果有发送结果，返回第一个结果（通常是图片和描述）
+                if results:
+                    return results[0]
+                else:
+                    return text_result
+                    
+            except Exception as send_error:
+                logger.error(f"发送图片失败: {send_error}")
+                # 如果发送图片失败，返回文本信息
+                return text_result
+            
+        else:
+            return f"根据查询 '{query}' 转换的标签 '{tags}' 找到作品，但都被过滤了。"
+    
+    
+    def _format_text_results(self, illusts, query, tags):
+        """格式化文本结果"""
+        result = f"根据查询 '{query}' 转换的标签 '{tags}' 找到以下作品:\n\n"
+        for i, illust in enumerate(illusts[:5], 1):
+            # 使用build_detail_message获取正确标题
+            detail_msg = build_detail_message(illust, is_novel=False)
+            # 提取标题 - 从detail_msg中提取第一行的标题
+            title = getattr(illust, 'title', '未知标题')
+            if title == '无题' and detail_msg:
+                # 尝试从detail_msg中提取标题
+                lines = detail_msg.split('\n')
+                if lines and lines[0].strip():
+                    title = lines[0].strip()
+            
+            author = getattr(illust.user, 'name', '未知作者') if hasattr(illust, 'user') else '未知作者'
+            illust_id = getattr(illust, 'id', '未知ID')
+            result += f"{i}. {title} - {author} (ID: {illust_id})\n"
+        
+        if len(illusts) > 5:
+            result += f"\n... 还有 {len(illusts) - 5} 个作品"
+        
+        return result
+    
     async def _convert_query_to_tags(self, query: str) -> str:
         """
-        将自然语言查询转换为Pixiv标签
+        使用AstrBot LLM API将自然语言查询转换为Pixiv标签
         
         Args:
             query: 自然语言查询
@@ -466,34 +410,111 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
         Returns:
             str: 转换后的标签
         """
-        # 这里可以集成实际的LLM API进行转换
-        # 目前使用简单的关键词映射
-        query_lower = query.lower()
+        # 添加缓存机制，避免重复调用LLM
+        # 使用更简单的缓存键，只取查询的前20个字符以避免键过长
+        cache_key = f"tag_conversion_{query[:20].strip()}"
+        if hasattr(self, '_tag_cache') and cache_key in self._tag_cache:
+            logger.info(f"使用缓存的标签转换结果: '{query}' -> '{self._tag_cache[cache_key]}'")
+            return self._tag_cache[cache_key]
         
-        # 简单的关键词映射
-        tag_mapping = {
-            "蓝色头发": "蓝色头发",
-            "少女": "少女",
-            "风景": "風景",
-            "猫": "猫",
-            "可爱": "可愛い",
-            "动漫": "オリジナル",
-            "插画": "イラスト",
-            "漫画": "漫画",
-            "角色": "女の子",
-        }
+        # 初始化缓存
+        if not hasattr(self, '_tag_cache'):
+            self._tag_cache = {}
         
-        # 提取关键词
-        tags = []
-        for keyword, tag in tag_mapping.items():
-            if keyword in query_lower:
-                tags.append(tag)
+        # 构建转换提示词
+        prompt = f"""请将以下自然语言查询转换为适合Pixiv搜索的标签。
+
+查询: {query}
+
+要求:
+1. 准确翻译查询中的关键词
+2. 优先使用日语标签（如: 女の子, 風景, 可愛い）
+3. 标签之间用空格分隔
+4. 只返回翻译后的标签，不要添加额外的标签
+5. 不要添加任何其他文字
+
+标签:"""
         
-        # 如果没有匹配的关键词，使用原查询作为标签
-        if not tags:
-            tags = [query]
+        try:
+            # 获取上下文和事件对象
+            actual_context = self._get_actual_context()
+            if not actual_context:
+                logger.warning("无法获取AstrAgentContext，使用原查询作为标签")
+                result = query.strip()
+                self._tag_cache[cache_key] = result
+                return result
+            
+            # 获取聊天模型ID
+            provider_id = await self._get_chat_provider_id(actual_context)
+            
+            # 调用LLM生成标签
+            logger.info(f"开始调用LLM转换标签，provider_id: {provider_id}")
+            llm_resp = await actual_context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+            )
+            logger.info("LLM调用成功")
+            
+            if llm_resp and hasattr(llm_resp, 'completion_text'):
+                translated_tags = llm_resp.completion_text.strip()
+                logger.info(f"LLM转换标签成功: '{query}' -> '{translated_tags}'")
+                
+                # 检查翻译结果是否有效
+                if translated_tags and translated_tags != query:
+                    # 同时使用原查询和翻译后的标签，提高搜索成功率
+                    combined_tags = f"{query.strip()} {translated_tags}"
+                    logger.info(f"组合搜索标签: '{combined_tags}'")
+                    # 缓存结果
+                    self._tag_cache[cache_key] = combined_tags
+                    return combined_tags
+                else:
+                    logger.warning("LLM返回的翻译结果无效，使用原查询")
+                    result = query.strip()
+                    self._tag_cache[cache_key] = result
+                    return result
+            
+            logger.warning("LLM返回空响应，使用原查询作为标签")
+            result = query.strip()
+            self._tag_cache[cache_key] = result
+            return result
+            
+        except Exception as e:
+            logger.error(f"LLM转换标签时发生错误: {e}")
+            # 当LLM调用失败时，直接使用原查询
+            result = query.strip()
+            self._tag_cache[cache_key] = result
+            return result
+    
+    def _get_actual_context(self):
+        """获取实际的AstrAgentContext"""
+        if not hasattr(self, '_last_context') or not self._last_context:
+            return None
+            
+        agent_context = self._last_context.context if hasattr(self._last_context, 'context') else self._last_context
         
-        return " ".join(tags)
+        if hasattr(agent_context, 'context'):
+            return agent_context.context
+        
+        return agent_context if hasattr(agent_context, 'llm_generate') else None
+    
+    async def _get_chat_provider_id(self, actual_context):
+        """获取聊天模型ID"""
+        try:
+            # 尝试从上下文中获取事件对象
+            event = getattr(actual_context, 'event', None)
+            if not event and hasattr(self, '_last_context') and self._last_context:
+                agent_context = self._last_context.context if hasattr(self._last_context, 'context') else self._last_context
+                event = getattr(agent_context, 'event', None)
+            
+            if event and hasattr(event, 'unified_msg_origin'):
+                umo = event.unified_msg_origin
+                return await actual_context.get_current_chat_provider_id(umo=umo)
+        except Exception as e:
+            logger.warning(f"获取聊天模型ID失败: {e}")
+        
+        return None
+    
+
 
 
 def create_pixiv_llm_tools(pixiv_client=None, pixiv_config=None) -> List[FunctionTool]:
