@@ -66,23 +66,6 @@
 - 已部署的 AstrBot 实例 (v3.x+)
 - 有效的 Pixiv 账号和 `refresh_token`
 
-### 安装步骤
-
-1. **克隆插件到 AstrBot 插件目录**
-   ```bash
-   cd /path/to/astrbot/data/plugins
-   git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
-   ```
-
-2. **确认依赖文件**
-   ```txt
-   # requirements.txt
-   pixivpy3>=3.0.0
-   aiohttp>=3.8.0
-   ```
-
-3. **重启 AstrBot** 以加载插件和依赖
-
 ### 配置插件
 
 1. 打开 AstrBot WebUI
@@ -170,20 +153,6 @@
 | `subscription_enabled` | 是否启用订阅功能 | true |
 | `subscription_check_interval_minutes` | 订阅更新检查间隔（分钟） | 30 |
 | `proxy` | 网络代理地址，如 `http://127.0.0.1:7890` | 留空 |
-
-## 🛠️ 开发构建
-
-```bash
-# 克隆项目
-git clone https://github.com/vmoranv/astrbot_plugin_pixiv_search.git
-cd astrbot_plugin_pixiv_search
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 部署到 AstrBot
-cp -r . /path/to/astrbot/data/plugins/astrbot_plugin_pixiv_search/
-```
 
 ## 🔧 故障排除
 

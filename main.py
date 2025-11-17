@@ -21,13 +21,6 @@ from .utils.pixiv_utils import init_pixiv_utils, filter_items, send_pixiv_image,
 from .utils.help import init_help_manager, get_help_message
 from .utils.llm_tool import create_pixiv_llm_tools
 
-@register(
-    "pixiv_search",
-    "vmoranv",
-    "Pixiv 图片搜索",
-    "1.4.0",
-    "https://github.com/vmoranv/astrbot_plugin_pixiv_search",
-)
 class PixivSearchPlugin(Star):
     """
     AstrBot 插件，用于通过 Pixiv API 搜索插画。
@@ -63,7 +56,6 @@ class PixivSearchPlugin(Star):
         init_pixiv_utils(self.client, self.pixiv_config, self.temp_dir)
 
         # 字体相关初始化
-        # 使用项目相对路径下的字体文件
         self.font_path = Path(__file__).parent / "data" / "SmileySans-Oblique.ttf"
         
         # 初始化帮助消息管理器
