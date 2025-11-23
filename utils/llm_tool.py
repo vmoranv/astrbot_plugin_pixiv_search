@@ -8,14 +8,12 @@ from pydantic.dataclasses import dataclass
 from fpdf import FPDF
 
 from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.api import logger
 
 from .tag import build_detail_message, FilterConfig, filter_illusts_with_reason, sample_illusts
 from .pixiv_utils import send_pixiv_image, generate_safe_filename
-
-ToolExecResult = Union[str, Any]
 
 @dataclass
 class PixivSearchTool(FunctionTool[AstrAgentContext]):
@@ -26,7 +24,7 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
     pixiv_config: Any = None
 
     name: str = "pixiv_search"
-    description: str = "Pixiv搜索工具。直接使用用户提供的原始关键词或标签进行搜索。严禁对用户的搜索词进行翻译、改写或扩展。"
+    description: str = "Pixiv搜索工具。直接使用用户提供的原始关键词或标签进行搜索。注意：每次调用只返回一个结果。除非用户明确要求'多个'或'继续'，否则不要重复调用此工具。"
     parameters: dict = Field(
         default_factory=lambda: {
             "type": "object",
@@ -201,10 +199,10 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
     async def _send_novel_result(self, event, items, query, tags):
         """发送小说结果（转换为PDF）"""
         import asyncio
-        logger.info(f"PixivSearchTool: 进入 _send_novel_result，项目数: {len(items)}")
+        total_items = len(items)
+        logger.info(f"PixivSearchTool: 进入 _send_novel_result，项目数: {total_items}")
         
         # 直接使用第一个项目，跳过过滤逻辑（因为main.py的下载命令也不过滤）
-        # 如果需要过滤，应该在search阶段做，但对于ID直达，我们假设用户知道自己在做什么
         if not items:
             return f"未找到小说。"
             
@@ -287,11 +285,20 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
             
             author = getattr(selected_item.user, 'name', '未知作者') if hasattr(selected_item, 'user') else '未知作者'
             
+            result_msg = ""
             if file_sent:
-                return f"已为您下载小说：\n**{novel_title}** - {author}\nID: {novel_id}\n\n文件已上传到群文件。\n{password_notice}"
+                result_msg = f"已为您下载小说：\n**{novel_title}** - {author}\nID: {novel_id}\n\n文件已上传到群文件。\n{password_notice}"
             else:
                 logger.warning("PixivSearchTool: 未能通过群文件发送，返回文本提示")
-                return f"已找到小说：\n**{novel_title}** - {author}\nID: {novel_id}\n\n由于平台限制或网络原因，无法直接发送文件。请尝试使用命令 `/pixiv_novel_download {novel_id}` 下载。\n(密码提示: {password})"
+                result_msg = f"已找到小说：\n**{novel_title}** - {author}\nID: {novel_id}\n\n由于平台限制或网络原因，无法直接发送文件。请尝试使用命令 `/pixiv_novel_download {novel_id}` 下载。\n(密码提示: {password})"
+            
+            # 添加防循环提示
+            if total_items > 1:
+                result_msg += f"\n\n(共找到 {total_items} 个相关小说，已发送其中 1 个。如需更多，请明确指示)"
+            else:
+                result_msg += "\n\n(搜索任务已完成)"
+                
+            return result_msg
 
         except Exception as e:
             logger.error(f"处理小说发送时出错: {e}")
@@ -343,7 +350,7 @@ class PixivSearchTool(FunctionTool[AstrAgentContext]):
                             logger.info("PixivSearchTool: 已手动发送图片结果")
                     except Exception as manual_send_error:
                         logger.warning(f"PixivSearchTool: 手动发送图片失败: {manual_send_error}")
-                        return results[0]
+                        return f"发送图片失败，但已找到结果: {text_result}"
                     
                     return text_result
                 else:
