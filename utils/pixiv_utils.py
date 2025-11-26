@@ -499,7 +499,26 @@ async def send_forward_message(client: AppPixivAPI, event, images, build_detail_
                 else:
                     # 处理普通图片
                     detail_message = build_detail_message_func(img)
-                    # 根据配置的图片质量选择URL
+                    
+                    # 使用与普通消息相同的URL获取逻辑，包括SinglePageUrls处理
+                    # 辅助类，用于统一单页插画的URL结构
+                    class SinglePageUrls:
+                        def __init__(self, illust):
+                            self.original = getattr(
+                                illust.meta_single_page, "original_image_url", None
+                            )
+                            self.large = getattr(illust.image_urls, "large", None)
+                            self.medium = getattr(illust.image_urls, "medium", None)
+                    
+                    # 获取URL对象，与普通消息保持一致
+                    if img.page_count > 1:
+                        # 多页作品的第一页
+                        url_obj = img.meta_pages[0].image_urls
+                    else:
+                        # 单页作品，使用SinglePageUrls获取original质量
+                        url_obj = SinglePageUrls(img)
+                    
+                    # 使用与普通消息相同的质量降级逻辑
                     quality_preference = ["original", "large", "medium"]
                     start_index = (
                         quality_preference.index(_config.image_quality)
@@ -508,27 +527,32 @@ async def send_forward_message(client: AppPixivAPI, event, images, build_detail_
                     )
                     qualities_to_try = quality_preference[start_index:]
                     
-                    image_url = None
-                    for quality in qualities_to_try:
-                        url = getattr(img.image_urls, quality, None)
-                        if url:
-                            image_url = url
-                            break
-                    
                     headers = {
                         "Referer": "https://www.pixiv.net/",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                     }
                     node_content = []
-                    if image_url:
+                    image_sent = False
+                    
+                    # 按质量优先级尝试下载图片，与普通消息保持一致
+                    for quality in qualities_to_try:
+                        image_url = getattr(url_obj, quality, None)
+                        if not image_url:
+                            continue
+                            
+                        logger.info(f"Pixiv 插件：转发消息尝试发送图片，质量: {quality}, URL: {image_url}")
                         img_data = await download_image(session, image_url, headers)
                         if img_data:
                             # 直接使用字节数据发送图片，避免文件系统路径问题
                             node_content.append(Image.fromBytes(img_data))
+                            image_sent = True
+                            break  # 成功下载，跳出质量循环
                         else:
-                            node_content.append(Plain(f"图片下载失败: {image_url}"))
-                    else:
-                        node_content.append(Plain("未找到图片链接"))
+                            logger.warning(f"Pixiv 插件：转发消息图片下载失败 (质量: {quality})。尝试下一质量...")
+                    
+                    if not image_sent:
+                        node_content.append(Plain("图片下载失败，仅发送信息"))
+                        
                     if _config.show_details:
                         node_content.append(Plain(detail_message))
                    
