@@ -499,7 +499,22 @@ async def send_forward_message(client: AppPixivAPI, event, images, build_detail_
                 else:
                     # 处理普通图片
                     detail_message = build_detail_message_func(img)
-                    image_url = img.image_urls.medium
+                    # 根据配置的图片质量选择URL
+                    quality_preference = ["original", "large", "medium"]
+                    start_index = (
+                        quality_preference.index(_config.image_quality)
+                        if _config.image_quality in quality_preference
+                        else 0
+                    )
+                    qualities_to_try = quality_preference[start_index:]
+                    
+                    image_url = None
+                    for quality in qualities_to_try:
+                        url = getattr(img.image_urls, quality, None)
+                        if url:
+                            image_url = url
+                            break
+                    
                     headers = {
                         "Referer": "https://www.pixiv.net/",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
